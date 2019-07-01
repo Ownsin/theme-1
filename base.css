@@ -209,7 +209,6 @@ input[type="checkbox"]:checked:after {
 }
 div#videowrap {
 	margin-bottom: 9px !important;
-	float: none !important;
 	background: black;
 height:100%;
 width:100%;
@@ -271,14 +270,14 @@ width:100%;
 
 	}
 	#chatwrap {
-		height: calc(100% - 49px) !important;
+		height: calc(100% - 50px) !important;
 	}
 	#chatwrap {
-		width: 44.94%;
 		float: right;
 		display: block;
 		position: fixed;
 		bottom: 0;
+		right: 1px;
 		margin-bottom: 0;
 	}
 	#mainpage > .nano {
@@ -307,8 +306,8 @@ width:100%;
 	}
 	#videowrap {
 		padding: 0;
-		padding-left: 15px;
-		padding-right: 15px;
+		padding-left: 14px;
+		padding-right: 0px;
 	}
 	#leftpane, #leftpane-inner, #pollwrap {
 		width: 100%
@@ -1222,7 +1221,19 @@ form#logoutform {
 .navbar-inverse .navbar-nav>.open>a, .navbar-inverse .navbar-nav>.open>a:hover, .navbar-inverse .navbar-nav>.open>a:focus {
 	background: hsl(199,68%,50%);
 }
+.navbar-inverse .navbar-brand:focus, .navbar-inverse .navbar-brand:hover {
+	color: hsl(0,0%,100%);
+}
 
+.navbar-inverse .navbar-brand {
+color: #99a4a9;
+}
+.navbar-brand {
+    margin-left: 35px!important;
+    float: left;
+    padding: 15px;
+    font-size: 19px;
+}
 
 body {
 	background: hsl(0,0%,6%);
