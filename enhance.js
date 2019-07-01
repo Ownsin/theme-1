@@ -1,3176 +1,2575 @@
-(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
-/*!
- * jQuery Mousewheel 3.1.13
- *
- * Copyright jQuery Foundation and other contributors
- * Released under the MIT license
- * http://jquery.org/license
- */
-
-(function (factory) {
-    if ( typeof define === 'function' && define.amd ) {
-        // AMD. Register as an anonymous module.
-        define(['jquery'], factory);
-    } else if (typeof exports === 'object') {
-        // Node/CommonJS style for Browserify
-        module.exports = factory;
-    } else {
-        // Browser globals
-        factory(jQuery);
-    }
-}(function ($) {
-
-    var toFix  = ['wheel', 'mousewheel', 'DOMMouseScroll', 'MozMousePixelScroll'],
-        toBind = ( 'onwheel' in document || document.documentMode >= 9 ) ?
-                    ['wheel'] : ['mousewheel', 'DomMouseScroll', 'MozMousePixelScroll'],
-        slice  = Array.prototype.slice,
-        nullLowestDeltaTimeout, lowestDelta;
-
-    if ( $.event.fixHooks ) {
-        for ( var i = toFix.length; i; ) {
-            $.event.fixHooks[ toFix[--i] ] = $.event.mouseHooks;
-        }
-    }
-
-    var special = $.event.special.mousewheel = {
-        version: '3.1.12',
-
-        setup: function() {
-            if ( this.addEventListener ) {
-                for ( var i = toBind.length; i; ) {
-                    this.addEventListener( toBind[--i], handler, false );
-                }
-            } else {
-                this.onmousewheel = handler;
-            }
-            // Store the line height and page height for this particular element
-            $.data(this, 'mousewheel-line-height', special.getLineHeight(this));
-            $.data(this, 'mousewheel-page-height', special.getPageHeight(this));
-        },
-
-        teardown: function() {
-            if ( this.removeEventListener ) {
-                for ( var i = toBind.length; i; ) {
-                    this.removeEventListener( toBind[--i], handler, false );
-                }
-            } else {
-                this.onmousewheel = null;
-            }
-            // Clean up the data we added to the element
-            $.removeData(this, 'mousewheel-line-height');
-            $.removeData(this, 'mousewheel-page-height');
-        },
-
-        getLineHeight: function(elem) {
-            var $elem = $(elem),
-                $parent = $elem['offsetParent' in $.fn ? 'offsetParent' : 'parent']();
-            if (!$parent.length) {
-                $parent = $('body');
-            }
-            return parseInt($parent.css('fontSize'), 10) || parseInt($elem.css('fontSize'), 10) || 16;
-        },
-
-        getPageHeight: function(elem) {
-            return $(elem).height();
-        },
-
-        settings: {
-            adjustOldDeltas: true, // see shouldAdjustOldDeltas() below
-            normalizeOffset: true  // calls getBoundingClientRect for each event
-        }
-    };
-
-    $.fn.extend({
-        mousewheel: function(fn) {
-            return fn ? this.bind('mousewheel', fn) : this.trigger('mousewheel');
-        },
-
-        unmousewheel: function(fn) {
-            return this.unbind('mousewheel', fn);
-        }
-    });
-
-
-    function handler(event) {
-        var orgEvent   = event || window.event,
-            args       = slice.call(arguments, 1),
-            delta      = 0,
-            deltaX     = 0,
-            deltaY     = 0,
-            absDelta   = 0,
-            offsetX    = 0,
-            offsetY    = 0;
-        event = $.event.fix(orgEvent);
-        event.type = 'mousewheel';
-
-        // Old school scrollwheel delta
-        if ( 'detail'      in orgEvent ) { deltaY = orgEvent.detail * -1;      }
-        if ( 'wheelDelta'  in orgEvent ) { deltaY = orgEvent.wheelDelta;       }
-        if ( 'wheelDeltaY' in orgEvent ) { deltaY = orgEvent.wheelDeltaY;      }
-        if ( 'wheelDeltaX' in orgEvent ) { deltaX = orgEvent.wheelDeltaX * -1; }
-
-        // Firefox < 17 horizontal scrolling related to DOMMouseScroll event
-        if ( 'axis' in orgEvent && orgEvent.axis === orgEvent.HORIZONTAL_AXIS ) {
-            deltaX = deltaY * -1;
-            deltaY = 0;
-        }
-
-        // Set delta to be deltaY or deltaX if deltaY is 0 for backwards compatabilitiy
-        delta = deltaY === 0 ? deltaX : deltaY;
-
-        // New school wheel delta (wheel event)
-        if ( 'deltaY' in orgEvent ) {
-            deltaY = orgEvent.deltaY * -1;
-            delta  = deltaY;
-        }
-        if ( 'deltaX' in orgEvent ) {
-            deltaX = orgEvent.deltaX;
-            if ( deltaY === 0 ) { delta  = deltaX * -1; }
-        }
-
-        // No change actually happened, no reason to go any further
-        if ( deltaY === 0 && deltaX === 0 ) { return; }
-
-        // Need to convert lines and pages to pixels if we aren't already in pixels
-        // There are three delta modes:
-        //   * deltaMode 0 is by pixels, nothing to do
-        //   * deltaMode 1 is by lines
-        //   * deltaMode 2 is by pages
-        if ( orgEvent.deltaMode === 1 ) {
-            var lineHeight = $.data(this, 'mousewheel-line-height');
-            delta  *= lineHeight;
-            deltaY *= lineHeight;
-            deltaX *= lineHeight;
-        } else if ( orgEvent.deltaMode === 2 ) {
-            var pageHeight = $.data(this, 'mousewheel-page-height');
-            delta  *= pageHeight;
-            deltaY *= pageHeight;
-            deltaX *= pageHeight;
-        }
-
-        // Store lowest absolute delta to normalize the delta values
-        absDelta = Math.max( Math.abs(deltaY), Math.abs(deltaX) );
-
-        if ( !lowestDelta || absDelta < lowestDelta ) {
-            lowestDelta = absDelta;
-
-            // Adjust older deltas if necessary
-            if ( shouldAdjustOldDeltas(orgEvent, absDelta) ) {
-                lowestDelta /= 40;
-            }
-        }
-
-        // Adjust older deltas if necessary
-        if ( shouldAdjustOldDeltas(orgEvent, absDelta) ) {
-            // Divide all the things by 40!
-            delta  /= 40;
-            deltaX /= 40;
-            deltaY /= 40;
-        }
-
-        // Get a whole, normalized value for the deltas
-        delta  = Math[ delta  >= 1 ? 'floor' : 'ceil' ](delta  / lowestDelta);
-        deltaX = Math[ deltaX >= 1 ? 'floor' : 'ceil' ](deltaX / lowestDelta);
-        deltaY = Math[ deltaY >= 1 ? 'floor' : 'ceil' ](deltaY / lowestDelta);
-
-        // Normalise offsetX and offsetY properties
-        if ( special.settings.normalizeOffset && this.getBoundingClientRect ) {
-            var boundingRect = this.getBoundingClientRect();
-            offsetX = event.clientX - boundingRect.left;
-            offsetY = event.clientY - boundingRect.top;
-        }
-
-        // Add information to the event object
-        event.deltaX = deltaX;
-        event.deltaY = deltaY;
-        event.deltaFactor = lowestDelta;
-        event.offsetX = offsetX;
-        event.offsetY = offsetY;
-        // Go ahead and set deltaMode to 0 since we converted to pixels
-        // Although this is a little odd since we overwrite the deltaX/Y
-        // properties with normalized deltas.
-        event.deltaMode = 0;
-
-        // Add event and delta to the front of the arguments
-        args.unshift(event, delta, deltaX, deltaY);
-
-        // Clearout lowestDelta after sometime to better
-        // handle multiple device types that give different
-        // a different lowestDelta
-        // Ex: trackpad = 3 and mouse wheel = 120
-        if (nullLowestDeltaTimeout) { clearTimeout(nullLowestDeltaTimeout); }
-        nullLowestDeltaTimeout = setTimeout(nullLowestDelta, 200);
-
-        return ($.event.dispatch || $.event.handle).apply(this, args);
-    }
-
-    function nullLowestDelta() {
-        lowestDelta = null;
-    }
-
-    function shouldAdjustOldDeltas(orgEvent, absDelta) {
-        // If this is an older event and the delta is divisable by 120,
-        // then we are assuming that the browser is treating this as an
-        // older mouse wheel event and that we should divide the deltas
-        // by 40 to try and get a more usable deltaFactor.
-        // Side note, this actually impacts the reported scroll distance
-        // in older browsers and can cause scrolling to be slower than native.
-        // Turn this off by setting $.event.special.mousewheel.settings.adjustOldDeltas to false.
-        return special.settings.adjustOldDeltas && orgEvent.type === 'mousewheel' && absDelta % 120 === 0;
-    }
-
-}));
-
-},{}],2:[function(require,module,exports){
-/*!
- * jQuery.selection - jQuery Plugin
- *
- * Copyright (c) 2010-2014 IWASAKI Koji (@madapaja).
- * http://blog.madapaja.net/
- * Under The MIT License
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sublicense, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
- * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
- * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
- * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-(function($, win, doc) {
-    /**
-     * get caret status of the selection of the element
-     *
-     * @param   {Element}   element         target DOM element
-     * @return  {Object}    return
-     * @return  {String}    return.text     selected text
-     * @return  {Number}    return.start    start position of the selection
-     * @return  {Number}    return.end      end position of the selection
-     */
-    var _getCaretInfo = function(element){
-        var res = {
-            text: '',
-            start: 0,
-            end: 0
-        };
-
-        if (!element.value) {
-            /* no value or empty string */
-            return res;
-        }
-
-        try {
-            if (win.getSelection) {
-                /* except IE */
-                res.start = element.selectionStart;
-                res.end = element.selectionEnd;
-                res.text = element.value.slice(res.start, res.end);
-            } else if (doc.selection) {
-                /* for IE */
-                element.focus();
-
-                var range = doc.selection.createRange(),
-                    range2 = doc.body.createTextRange();
-
-                res.text = range.text;
-
-                try {
-                    range2.moveToElementText(element);
-                    range2.setEndPoint('StartToStart', range);
-                } catch (e) {
-                    range2 = element.createTextRange();
-                    range2.setEndPoint('StartToStart', range);
-                }
-
-                res.start = element.value.length - range2.text.length;
-                res.end = res.start + range.text.length;
-            }
-        } catch (e) {
-            /* give up */
-        }
-
-        return res;
-    };
-
-    /**
-     * caret operation for the element
-     * @type {Object}
-     */
-    var _CaretOperation = {
-        /**
-         * get caret position
-         *
-         * @param   {Element}   element         target element
-         * @return  {Object}    return
-         * @return  {Number}    return.start    start position for the selection
-         * @return  {Number}    return.end      end position for the selection
-         */
-        getPos: function(element) {
-            var tmp = _getCaretInfo(element);
-            return {start: tmp.start, end: tmp.end};
-        },
-
-        /**
-         * set caret position
-         *
-         * @param   {Element}   element         target element
-         * @param   {Object}    toRange         caret position
-         * @param   {Number}    toRange.start   start position for the selection
-         * @param   {Number}    toRange.end     end position for the selection
-         * @param   {String}    caret           caret mode: any of the following: "keep" | "start" | "end"
-         */
-        setPos: function(element, toRange, caret) {
-            caret = this._caretMode(caret);
-
-            if (caret === 'start') {
-                toRange.end = toRange.start;
-            } else if (caret === 'end') {
-                toRange.start = toRange.end;
-            }
-
-            element.focus();
-            try {
-                if (element.createTextRange) {
-                    var range = element.createTextRange();
-
-                    if (win.navigator.userAgent.toLowerCase().indexOf("msie") >= 0) {
-                        toRange.start = element.value.substr(0, toRange.start).replace(/\r/g, '').length;
-                        toRange.end = element.value.substr(0, toRange.end).replace(/\r/g, '').length;
-                    }
-
-                    range.collapse(true);
-                    range.moveStart('character', toRange.start);
-                    range.moveEnd('character', toRange.end - toRange.start);
-
-                    range.select();
-                } else if (element.setSelectionRange) {
-                    element.setSelectionRange(toRange.start, toRange.end);
-                }
-            } catch (e) {
-                /* give up */
-            }
-        },
-
-        /**
-         * get selected text
-         *
-         * @param   {Element}   element         target element
-         * @return  {String}    return          selected text
-         */
-        getText: function(element) {
-            return _getCaretInfo(element).text;
-        },
-
-        /**
-         * get caret mode
-         *
-         * @param   {String}    caret           caret mode
-         * @return  {String}    return          any of the following: "keep" | "start" | "end"
-         */
-        _caretMode: function(caret) {
-            caret = caret || "keep";
-            if (caret === false) {
-                caret = 'end';
-            }
-
-            switch (caret) {
-                case 'keep':
-                case 'start':
-                case 'end':
-                    break;
-
-                default:
-                    caret = 'keep';
-            }
-
-            return caret;
-        },
-
-        /**
-         * replace selected text
-         *
-         * @param   {Element}   element         target element
-         * @param   {String}    text            replacement text
-         * @param   {String}    caret           caret mode: any of the following: "keep" | "start" | "end"
-         */
-        replace: function(element, text, caret) {
-            var tmp = _getCaretInfo(element),
-                orig = element.value,
-                pos = $(element).scrollTop(),
-                range = {start: tmp.start, end: tmp.start + text.length};
-
-            element.value = orig.substr(0, tmp.start) + text + orig.substr(tmp.end);
-
-            $(element).scrollTop(pos);
-            this.setPos(element, range, caret);
-        },
-
-        /**
-         * insert before the selected text
-         *
-         * @param   {Element}   element         target element
-         * @param   {String}    text            insertion text
-         * @param   {String}    caret           caret mode: any of the following: "keep" | "start" | "end"
-         */
-        insertBefore: function(element, text, caret) {
-            var tmp = _getCaretInfo(element),
-                orig = element.value,
-                pos = $(element).scrollTop(),
-                range = {start: tmp.start + text.length, end: tmp.end + text.length};
-
-            element.value = orig.substr(0, tmp.start) + text + orig.substr(tmp.start);
-
-            $(element).scrollTop(pos);
-            this.setPos(element, range, caret);
-        },
-
-        /**
-         * insert after the selected text
-         *
-         * @param   {Element}   element         target element
-         * @param   {String}    text            insertion text
-         * @param   {String}    caret           caret mode: any of the following: "keep" | "start" | "end"
-         */
-        insertAfter: function(element, text, caret) {
-            var tmp = _getCaretInfo(element),
-                orig = element.value,
-                pos = $(element).scrollTop(),
-                range = {start: tmp.start, end: tmp.end};
-
-            element.value = orig.substr(0, tmp.end) + text + orig.substr(tmp.end);
-
-            $(element).scrollTop(pos);
-            this.setPos(element, range, caret);
-        }
-    };
-
-    /* add jQuery.selection */
-    $.extend({
-        /**
-         * get selected text on the window
-         *
-         * @param   {String}    mode            selection mode: any of the following: "text" | "html"
-         * @return  {String}    return
-         */
-        selection: function(mode) {
-            var getText = ((mode || 'text').toLowerCase() === 'text');
-
-            try {
-                if (win.getSelection) {
-                    if (getText) {
-                        // get text
-                        return win.getSelection().toString();
-                    } else {
-                        // get html
-                        var sel = win.getSelection(), range;
-
-                        if (sel.getRangeAt) {
-                            range = sel.getRangeAt(0);
-                        } else {
-                            range = doc.createRange();
-                            range.setStart(sel.anchorNode, sel.anchorOffset);
-                            range.setEnd(sel.focusNode, sel.focusOffset);
-                        }
-
-                        return $('<div></div>').append(range.cloneContents()).html();
-                    }
-                } else if (doc.selection) {
-                    if (getText) {
-                        // get text
-                        return doc.selection.createRange().text;
-                    } else {
-                        // get html
-                        return doc.selection.createRange().htmlText;
-                    }
-                }
-            } catch (e) {
-                /* give up */
-            }
-
-            return '';
-        }
-    });
-
-    /* add selection */
-    $.fn.extend({
-        selection: function(mode, opts) {
-            opts = opts || {};
-
-            switch (mode) {
-                /**
-                 * selection('getPos')
-                 * get caret position
-                 *
-                 * @return  {Object}    return
-                 * @return  {Number}    return.start    start position for the selection
-                 * @return  {Number}    return.end      end position for the selection
-                 */
-                case 'getPos':
-                    return _CaretOperation.getPos(this[0]);
-
-                /**
-                 * selection('setPos', opts)
-                 * set caret position
-                 *
-                 * @param   {Number}    opts.start      start position for the selection
-                 * @param   {Number}    opts.end        end position for the selection
-                 */
-                case 'setPos':
-                    return this.each(function() {
-                        _CaretOperation.setPos(this, opts);
-                    });
-
-                /**
-                 * selection('replace', opts)
-                 * replace the selected text
-                 *
-                 * @param   {String}    opts.text            replacement text
-                 * @param   {String}    opts.caret           caret mode: any of the following: "keep" | "start" | "end"
-                 */
-                case 'replace':
-                    return this.each(function() {
-                        _CaretOperation.replace(this, opts.text, opts.caret);
-                    });
-
-                /**
-                 * selection('insert', opts)
-                 * insert before/after the selected text
-                 *
-                 * @param   {String}    opts.text            insertion text
-                 * @param   {String}    opts.caret           caret mode: any of the following: "keep" | "start" | "end"
-                 * @param   {String}    opts.mode            insertion mode: any of the following: "before" | "after"
-                 */
-                case 'insert':
-                    return this.each(function() {
-                        if (opts.mode === 'before') {
-                            _CaretOperation.insertBefore(this, opts.text, opts.caret);
-                        } else {
-                            _CaretOperation.insertAfter(this, opts.text, opts.caret);
-                        }
-                    });
-
-                /**
-                 * selection('get')
-                 * get selected text
-                 *
-                 * @return  {String}    return
-                 */
-                case 'get':
-                    /* falls through */
-                default:
-                    return _CaretOperation.getText(this[0]);
-            }
-
-            return this;
-        }
-    });
-})(jQuery, window, window.document);
-
-},{}],3:[function(require,module,exports){
-window.cytubeEnhanced = new window.CytubeEnhanced(
-    $('title').text(),
-    (window.cytubeEnhancedSettings ? (window.cytubeEnhancedSettings.language || 'en') : 'en'),
-    (window.cytubeEnhancedSettings ? (window.cytubeEnhancedSettings.modulesSettings || {}) : {})
-);
-
-},{}],4:[function(require,module,exports){
-window.CytubeEnhanced = function(channelName, language, modulesSettings) {
-    'use strict';
-
-    this.channelName = channelName;
-
-    var translations = {};
-
-    var modules = {};
-    var MODULE_LOAD_TIMEOUT = 10000; //ms
-    var MODULE_LOAD_PERIOD = 100; //ms
-
-
-    /**
-     * Gets the module
-     *
-     * Returns $.Deferred() promise object and throws error exception if timeout
-     *
-     * @param {string} moduleName The name of the module
-     * @returns {object}
-     */
-    this.getModule = function (moduleName) {
-        var promise = $.Deferred();
-        var time = MODULE_LOAD_TIMEOUT;
-
-        (function getModuleRecursive() {
-            if (modules[moduleName] !== undefined) {
-                promise.resolve(modules[moduleName]);
-            } else if (time <= 0) {
-                throw new Error("Load timeout for module " + moduleName + '.');
-            } else {
-                time -= MODULE_LOAD_PERIOD;
-
-                setTimeout(getModuleRecursive, MODULE_LOAD_PERIOD);
-            }
-        })();
-
-        return promise;
-    };
-
-
-    /**
-     * Adds the module
-     *
-     * @param {string} moduleName The name of the module
-     * @param ModuleConstructor The module's constructor
-     */
-    this.addModule = function (moduleName, ModuleConstructor) {
-        if (this.isModulePermitted(moduleName)) {
-            var moduleSettings = modulesSettings[moduleName] || {};
-
-            modules[moduleName] = new ModuleConstructor(this, moduleSettings);
-            modules[moduleName].settings = moduleSettings;
-        }
-    };
-
-
-    /**
-     * Configures the module
-     *
-     * Previous options don't reset.
-     *
-     * @param {string} moduleName  The name of the module
-     * @param moduleOptions The module's options
-     */
-    this.configureModule = function (moduleName, moduleOptions) {
-        $.extend(true, modulesSettings[moduleName], moduleOptions);
-    };
-
-
-    /**
-     * Checks if module is permitted
-     *
-     * @param moduleName The name of the module to check
-     * @returns {boolean}
-     */
-    this.isModulePermitted = function (moduleName) {
-        return modulesSettings.hasOwnProperty(moduleName) ?
-            (modulesSettings[moduleName].hasOwnProperty('enabled') ? modulesSettings[moduleName].enabled : true) :
-            true;
-    };
-
-
-    /**
-     * Adds the translation object
-     * @param language The language identifier
-     * @param translationObject The translation object
-     */
-    this.addTranslation = function (language, translationObject) {
-        translations[language] = translationObject;
-    };
-
-
-    /**
-     * Translates the text
-     * @param text The text to translate
-     * @returns {string}
-     */
-    this.t = function (text) {
-        var translatedText = text;
-
-        if (language !== 'en' && translations[language] !== undefined) {
-            if (text.indexOf('[.]') !== -1) {
-                var textWithNamespaces = text.split('[.]');
-
-                translatedText = translations[language][textWithNamespaces[0]];
-                for (var namespace = 1, namespacesLen = textWithNamespaces.length; namespace < namespacesLen; namespace++) {
-                    translatedText = translatedText[textWithNamespaces[namespace]];
-                }
-            } else {
-                translatedText = translations[language][text];
-            }
-        } else if (text.indexOf('[.]') !== -1) { //English text by default
-            translatedText = text.split('[.]').pop();
-        }
-
-        return translatedText;
-    };
-
-
-    /**
-     * UserConfig constructor
-     * @constructor
-     */
-    var UserConfig = function () {
-        /**
-         * UserConfig options
-         * @type {object}
-         */
-        this.options = {};
-
-        /**
-         * Sets the user's option and saves it in the user's cookies
-         * @param name The name ot the option
-         * @param value The value of the option
-         */
-        this.set = function (name, value) {
-            this.options[name] = value;
-            window.setOpt(window.CHANNEL.name + "_config-" + name, value);
-        };
-
-        /**
-         * Gets the value of the user's option
-         *
-         * User's values are setted up from user's cookies at the beginning of the script by the method loadDefaults()
-         *
-         * @param name Option's name
-         * @returns {*}
-         */
-        this.get = function (name) {
-            if (!this.options.hasOwnProperty(name)) {
-                this.options[name] = window.getOrDefault(window.CHANNEL.name + "_config-" + name, undefined);
-            }
-
-            return this.options[name];
-        };
-
-        /**
-         * Toggles user's boolean option
-         * @param name Boolean option's name
-         * @returns {boolean}
-         */
-        this.toggle = function (name) {
-            var result = !this.get(name);
-
-            this.set(name, result);
-
-            return result;
-        };
-    };
-
-    /**
-     * User's options
-     * @type {UserConfig}
-     */
-    this.userConfig = new UserConfig();
-};
-
-},{}],5:[function(require,module,exports){
-window.cytubeEnhanced.addModule('additionalChatCommands', function (app, settings) {
-    'use strict';
-
-    var that = this;
-
-    var defaultSettings = {
-        permittedCommands: ['*']
-    };
-    settings = $.extend({}, defaultSettings, settings);
-
-    function isCommandPermitted(commandName) {
-        return settings.permittedCommands.indexOf('*') !== -1 || settings.permittedCommands.indexOf(commandName) !== -1 || false;
-    }
-
-
-    this.askAnswers = ["100%", app.t('qCommands[.]of course'), app.t('qCommands[.]yes'), app.t('qCommands[.]maybe'), app.t('qCommands[.]impossible'), app.t('qCommands[.]no way'), app.t('qCommands[.]don\'t think so'), app.t('qCommands[.]no'), "50/50", app.t('qCommands[.]fairy is busy'), app.t('qCommands[.]I regret to inform you')];
-
-
-    this.randomQuotes = [];
-
-
-    /**
-     *The list of commands
-     *
-     * Every command must have method value(message) which returns command's message.
-     * Commands can also have description property for chatCommandsHelp module and isAvailable method which returns false if command is not permitted (by default returns true)
-     *
-     * @type {object}
-     */
-    this.commandsList = {
-        '!pick ': {
-            description: app.t('chatCommands[.]random option from the list of options (!pick option1, option2, option3)'),
-            value: function (msg) {
-                var variants = msg.replace('!pick ', '').split(',');
-                return variants[Math.floor(Math.random() * variants.length)].trim();
-            }
-        },
-        '!time': {
-            description: app.t('chatCommands[.]show the current time'),
-            value: function () {
-                var h = new Date().getHours();
-                if (h < 10) {
-                    h = '0' + h;
-                }
-
-                var m = new Date().getMinutes();
-                if (m < 10) {
-                    m = '0' + m;
-                }
-
-                return app.t('chatCommands[.]current time') + ': ' + h + ':' + m;
-            }
-        },
-        '!dice': {
-            description: app.t('chatCommands[.]throw a dice'),
-            value: function () {
-                return Math.floor(Math.random() * 5) + 1;
-            }
-        },
-        '!roll': {
-            description: app.t('chatCommands[.]random number between 0 and 999'),
-            value: function () {
-                var randomNumber = Math.floor(Math.random() * 1000);
-
-                if (randomNumber < 100) {
-                    randomNumber = '0' + randomNumber;
-                } else if (randomNumber < 10) {
-                    randomNumber= '00' + randomNumber;
-                }
-
-                return randomNumber;
-            }
-        },
-       
-        '!skip': {
-            description: app.t('chatCommands[.]vote for the video skip'),
-            value: function (msg) {
-                window.socket.emit("voteskip");
-                msg = app.t('chatCommands[.]you have been voted for the video skip');
-
-                return msg;
-            },
-            isAvailable: function () {
-                return window.hasPermission('voteskip');
-            }
-        },
-        '!next': {
-            description: app.t('chatCommands[.]play the next video'),
-            value: function (msg) {
-                window.socket.emit("playNext");
-                msg = app.t('chatCommands[.]the next video is playing');
-
-                return msg;
-            },
-            isAvailable: function () {
-                return window.hasPermission('playlistjump');
-            }
-        },
-        '!bump': {
-            description: app.t('chatCommands[.]bump the last video'),
-            value: function (msg) {
-                var $lastEntry = $('#queue').find('.queue_entry').last();
-                var uid = $lastEntry.data("uid");
-                var title = $lastEntry.find('.qe_title').html();
-
-                window.socket.emit("moveMedia", {from: uid, after: window.PL_CURRENT});
-
-                msg = app.t('chatCommands[.]the last video was bumped') + title;
-
-                return msg;
-            },
-            isAvailable: function () {
-                return window.hasPermission('playlistmove');
-            }
-        },
-        '!now': {
-            description: app.t('chatCommands[.]show the current video\'s name'),
-            value: function () {
-                return app.t('chatCommands[.]now: ') + $(".queue_active a").html();
-            }
-        },
-       
-    };
-
-
-    var IS_COMMAND = false;
-    this.prepareMessage = function (msg) {
-        IS_COMMAND = false;
-
-        for (var command in this.commandsList) {
-            if (this.commandsList.hasOwnProperty(command) && msg.indexOf(command) === 0) {
-                if (isCommandPermitted(command) && (this.commandsList[command].isAvailable ? this.commandsList[command].isAvailable() : true)) {
-                    IS_COMMAND = true;
-
-                    msg = this.commandsList[command].value(msg);
-                }
-
-                break;
-            }
-        }
-
-        return msg;
-    };
-
-
-    this.sendUserChatMessage = function (e) {
-        if(e.keyCode === 13) {
-            if (window.CHATTHROTTLE) {
-                return;
-            }
-
-            var msg = $("#chatline").val().trim();
-
-            if(msg !== '') {
-                var meta = {};
-
-                if (window.USEROPTS.adminhat && window.CLIENT.rank >= 255) {
-                    msg = "/a " + msg;
-                } else if (window.USEROPTS.modhat && window.CLIENT.rank >= window.Rank.Moderator) {
-                    meta.modflair = window.CLIENT.rank;
-                }
-
-                // The /m command no longer exists, so emulate it clientside
-                if (window.CLIENT.rank >= 2 && msg.indexOf("/m ") === 0) {
-                    meta.modflair = window.CLIENT.rank;
-                    msg = msg.substring(3);
-                }
-
-
-                var msgForCommand = this.prepareMessage(msg);
-
-                if (IS_COMMAND) {
-                    window.socket.emit("chatMsg", {msg: msg, meta: meta});
-                    window.socket.emit("chatMsg", {msg: 'billbot: ' + msgForCommand});
-
-                    IS_COMMAND = false;
-                } else {
-                    window.socket.emit("chatMsg", {msg: msg, meta: meta});
-                }
-
-
-                window.CHATHIST.push($("#chatline").val());
-                window.CHATHISTIDX = window.CHATHIST.length;
-                $("#chatline").val('');
-            }
-
-            return;
-        } else if(e.keyCode === 9) { // Tab completion
-            window.chatTabComplete();
-            e.preventDefault();
-            return false;
-        } else if(e.keyCode === 38) { // Up arrow (input history)
-            if(window.CHATHISTIDX === window.CHATHIST.length) {
-                window.CHATHIST.push($("#chatline").val());
-            }
-            if(window.CHATHISTIDX > 0) {
-                window.CHATHISTIDX--;
-                $("#chatline").val(window.CHATHIST[window.CHATHISTIDX]);
-            }
-
-            e.preventDefault();
-            return false;
-        } else if(e.keyCode === 40) { // Down arrow (input history)
-            if(window.CHATHISTIDX < window.CHATHIST.length - 1) {
-                window.CHATHISTIDX++;
-                $("#chatline").val(window.CHATHIST[window.CHATHISTIDX]);
-            }
-
-            e.preventDefault();
-            return false;
-        }
-    };
-
-
-    $('#chatline, #chatbtn').off();
-
-    $('#chatline').on('keydown', function (e) {
-        that.sendUserChatMessage(e);
-    });
-
-    $('#chatbtn').on('click', function (e) {
-        that.sendUserChatMessage(e);
-    });
-});
-
-},{}],6:[function(require,module,exports){
-require('jquery.selection');
-
-window.cytubeEnhanced.addModule('bbCodesHelper', function (app, settings) {
-    'use strict';
-
-    var that = this;
-
-    var defaultSettings = {
-        templateButtonsOrder: ['b', 'i', 'sp', 'code', 's'],
-        templateButtonsAnimationSpeed: 150
-    };
-    settings = $.extend({}, defaultSettings, settings);
-
-
-    if ($('#chat-controls').length === 0) {
-        $('<div id="chat-controls" class="">').appendTo("#chatwrap");
-    }
-
-
-    this.handleMarkdownHelperBtnClick = function ($markdownHelperBtn, $markdownTemplatesWrapper) {
-        if ($markdownHelperBtn.hasClass('btn-default')) { //closed
-            $markdownHelperBtn.removeClass('btn-default');
-            $markdownHelperBtn.addClass('btn-success');
-
-            $markdownTemplatesWrapper.show();
-            $markdownTemplatesWrapper.children().animate({left: 0}, settings.templateButtonsAnimationSpeed);
-        } else { //opened
-            $markdownHelperBtn.removeClass('btn-success');
-            $markdownHelperBtn.addClass('btn-default');
-
-            $markdownTemplatesWrapper.children().animate({left: -$markdownTemplatesWrapper.width()}, settings.templateButtonsAnimationSpeed, function () {
-                $markdownTemplatesWrapper.hide();
-            });
-        }
-    };
-
-    this.$markdownHelperBtn = $('<button id="markdown-helper-btn" type="button" class="btn btn-sm btn-default" title="' + app.t('markdown[.]Markdown helper') + '">')
-        .html('<i class="glyphicon glyphicon-font"></i>')
-        .on('click', function () {
-            that.handleMarkdownHelperBtnClick($(this), that.$markdownTemplatesWrapper);
-
-            app.userConfig.toggle('bb-codes-opened');
-        });
-
-    if ($('#chat-help-btn').length !== 0) {
-        this.$markdownHelperBtn.insertBefore('#chat-help-btn');
-    } else {
-        this.$markdownHelperBtn.appendTo('#chat-controls');
-    }
-
-
-    this.$markdownTemplatesWrapper = $('<div class="btn-group markdown-helper-templates-wrapper">')
-        .insertAfter(this.$markdownHelperBtn)
-        .hide();
-
-    if (app.userConfig.get('bb-codes-opened')) {
-        this.handleMarkdownHelperBtnClick(this.$markdownHelperBtn, this.$markdownTemplatesWrapper);
-    }
-
-
-    /**
-     * Markdown templates
-     *
-     * To add your template you need to also add your template key into settings.templateButtonsOrder
-     * @type {object}
-     */
-    this.markdownTemplates = {
-        'b': {
-            text: '<b>B</b>',
-            title: app.t('markdown[.]Bold text')
-        },
-        'i': {
-            text: '<i>I</i>',
-            title: app.t('markdown[.]Cursive text')
-        },
-        'sp': {
-            text: 'SP',
-            title: app.t('markdown[.]Spoiler')
-        },
-        'code': {
-            text: '<code>CODE</code>',
-            title: app.t('markdown[.]Monospace')
-        },
-        's': {
-            text: '<s>S</s>',
-            title: app.t('markdown[.]Strike')
-        }
-    };
-
-    var template;
-    for (var templateIndex = 0, templatesLength = settings.templateButtonsOrder.length; templateIndex < templatesLength; templateIndex++) {
-        template = settings.templateButtonsOrder[templateIndex];
-
-        $('<button type="button" class="btn btn-sm btn-default" title="' + this.markdownTemplates[template].title + '">')
-            .html(this.markdownTemplates[template].text)
-            .data('template', template)
-            .appendTo(this.$markdownTemplatesWrapper);
-    }
-
-
-    this.handleMarkdown = function (templateType) {
-        if (this.markdownTemplates.hasOwnProperty(templateType)) {
-            $('#chatline').selection('insert', {
-                text: '[' + templateType + ']',
-                mode: 'before'
-            });
-
-            $('#chatline').selection('insert', {
-                text: '[/' + templateType + ']',
-                mode: 'after'
-            });
-        }
-    };
-    this.$markdownTemplatesWrapper.on('click', 'button', function () {
-        that.handleMarkdown($(this).data('template'));
-
-        return false;
-    });
-});
-
-},{"jquery.selection":2}],7:[function(require,module,exports){
-window.cytubeEnhanced.addModule('chatAvatars', function (app) {
-    'use strict';
-
-    window.formatChatMessage = (function (oldFormatChatMessage) {
-        return function (data, last) {
-            var div = oldFormatChatMessage(data, last);
-
-            var avatarCssClasses = (app.userConfig.get('avatarsMode') == 'big' ? 'chat-avatar chat-avatar_big' : 'chat-avatar chat-avatar_small');
-
-            if ((window.findUserlistItem(data.username) != null) && (window.findUserlistItem(data.username).data('profile').image != "") && (app.userConfig.get('avatarsMode') != false)) {
-                var $avatar = $("<img>").attr("src", window.findUserlistItem(data.username).data('profile').image)
-                    .addClass(avatarCssClasses)
-                    .prependTo(div.find('.username').parent());
-
-                if (app.userConfig.get('avatarsMode') == 'big') {
-                    div.find('.username').css('display', 'none');
-                    $avatar.attr('title', data.username);
-                }
-            }
-
-            return div;
-        };
-    })(window.formatChatMessage);
-
-
-    if (app.userConfig.get('avatarsMode') != '') {
-        $('.username').each(function () {
-            var $messageBlock = $(this).parent();
-            var username = $(this).text().replace(/^\s+|[:]?\s+$/g, '');
-            var avatarCssClasses = (app.userConfig.get('avatarsMode') == 'big' ? 'chat-avatar chat-avatar_big' : 'chat-avatar chat-avatar_small');
-
-            if ((window.findUserlistItem(username) != null) && (window.findUserlistItem(username).data('profile').image != "")) {
-                var $avatar = $("<img>").attr("src", window.findUserlistItem(username).data('profile').image)
-                    .addClass(avatarCssClasses)
-                    .prependTo($messageBlock);
-
-                if (app.userConfig.get('avatarsMode') == 'big') {
-                    $(this).css('display', 'none');
-                    $avatar.attr('title', username);
-                }
-            }
-        });
-    }
-});
-},{}],8:[function(require,module,exports){
-window.cytubeEnhanced.addModule('chatCommandsHelp', function (app) {
-    'use strict';
-
-    var that = this;
-
-
-    if ($('#chat-controls').length === 0) {
-        $('<div id="chat-controls" class="">').appendTo("#chatwrap");
-    }
-
-
-    this.commands = {};
-
-    this.commands[app.t('Standard commands')] = {
-        '/me': app.t('chatCommands[.]%username% action (e.g: <i>/me is dancing</i>)'),
-        '/sp': app.t('chatCommands[.]spoiler'),
-        '/afk': app.t('chatCommands[.]sets the "AFK" status')
-    };
-
-    if (app.isModulePermitted('additionalChatCommands')) {
-        app.getModule('additionalChatCommands').done(function (commandsModule) {
-            var additionalCommands = {};
-
-            for (var command in commandsModule.commandsList) {
-                if (commandsModule.commandsList.hasOwnProperty(command) && (commandsModule.commandsList[command].isAvailable ? commandsModule.commandsList[command].isAvailable() : true)) {
-                    additionalCommands[command] = commandsModule.commandsList[command].description || '';
-                }
-            }
-
-            that.commands[app.t('Extra commands')] = additionalCommands;
-        });
-    }
-
-
-    this.handleChatHelpBtn = function (commands) {
-        var $bodyWrapper = $('<div>');
-
-        for (var commandsPart in commands) {
-            if (commands.hasOwnProperty(commandsPart)) {
-                $('<h3>').html(commandsPart).appendTo($bodyWrapper);
-
-                var $ul = $('<ul>');
-                for (var command in commands[commandsPart]) {
-                    if (commands[commandsPart].hasOwnProperty(command)) {
-                        $('<li>').html('<code>' + command + '</code> - ' + commands[commandsPart][command] + '.').appendTo($ul);
-                    }
-                }
-
-                $ul.appendTo($bodyWrapper);
-            }
-        }
-
-        app.getModule('utils').done(function (utilsModule) {
-            utilsModule.createModalWindow(app.t('The list of chat commands'), $bodyWrapper);
-        });
-    };
-    this.$chatHelpBtn = $('<button id="chat-help-btn" class="btn btn-sm btn-default">')
-        .text(app.t('Commands'))
-        .appendTo('#chat-controls')
-        .on('click', function () {
-            that.handleChatHelpBtn(that.commands);
-        });
-});
-
-},{}],9:[function(require,module,exports){
-window.cytubeEnhanced.addModule('chatControls', function (app, settings) {
-    'use strict';
-
-    var that = this;
-
-    var defaultSettings = {
-        afkButton: true,
-        clearChatButton: true
-    };
-    settings = $.extend({}, defaultSettings, settings);
-
-
-
-
-    this.handleAfkBtn = function () {
-        window.socket.emit('chatMsg', {msg: '/afk'});
-    };
-    this.$afkBtn = $('<span id="afk-btn" class="btn btn-sm btn-default pointer">')
-        .text(app.t('AFK'))
-        .appendTo('#chatheader')
-        .on('click', function () {
-            that.handleAfkBtn();
-        });
-
-
-
-    this.handleAfk = function (data) {
-        if (data.name === window.CLIENT.name) {
-            if (data.afk) {
-                that.$afkBtn.removeClass('afk-default');
-                that.$afkBtn.addClass('afk-success');
-            } else {
-                that.$afkBtn.addClass('afk-default');
-                that.$afkBtn.removeClass('afk-success');
-            }
-        }
-    };
-
-    if (settings.afkButton) {
-        window.socket.on('setAFK', function (data) {
-            that.handleAfk(data);
-        });
-    } else {
-        this.$afkBtn.hide();
-    }
-
-
-
-
-    this.handleClearBtn = function () {
-        if (window.confirm(app.t('Are you sure, that you want to clear the chat?'))) {
-            window.socket.emit("chatMsg", {msg: '/clear'});
-        }
-    };
-    this.$clearChatBtn = $('<span id="clear-chat-btn" class="btn btn-sm btn-default pointer">')
-        .text(app.t('Clear chat'))
-        .insertAfter(this.$afkBtn)
-        .on('click', function () {
-            that.handleClearBtn();
-        });
-
-    if (!window.hasPermission("chatclear")) {
-        this.$clearChatBtn.hide();
-    }
-
-
-    this.handleChatClear = function () {
-        if (window.hasPermission("chatclear") && settings.clearChatButton) {
-            that.$clearChatBtn.show();
-        } else {
-            that.$clearChatBtn.hide();
-        }
-    };
-
-    window.socket.on('setUserRank', function () {
-        that.handleChatClear();
-    });
-});
-
-},{}],10:[function(require,module,exports){
-window.cytubeEnhanced.addModule('favouritePictures', function (app) {
-    'use strict';
-
-    var that = this;
-
-
-    if ($('#chat-panel').length === 0) {
-        $('<div id="chat-panel" class="row">').insertAfter("#main");
-    }
-
-    if ($('#chat-controls').length === 0) {
-        $('<div id="chat-controls" class="">').appendTo("#chatwrap");
-    }
-
-
-    this.$toggleFavouritePicturesPanelBtn = $('<button id="favourite-pictures-btn" class="btn btn-sm btn-default" title="' + app.t('favPics[.]Show your favorite images') + '">')
-        .html('<i class="glyphicon glyphicon-th"></i>');
-    if ($('#smiles-btn').length !== 0) {
-        this.$toggleFavouritePicturesPanelBtn.insertAfter('#smiles-btn');
-    } else {
-        this.$toggleFavouritePicturesPanelBtn.prependTo('#chat-controls');
-    }
-
-
-
-
-
-    this.$favouritePicturesPanel = $('<div id="favourite-pictures-panel" class="section">')
-        .appendTo('#chat-panel')
-        .hide();
-    this.$favouritePicturesPanelRow = $('<div class="favourite-pictures-panel-row">')
-        .appendTo(this.$favouritePicturesPanel);
-
-
-    this.$favouritePicturesTrash = $('<div id="pictures-trash" title="' + app.t('favPics[.]Drop the picture here to remove it') + '">')
-        .append('<i class="pictures-trash-icon glyphicon glyphicon-trash">')
-        .appendTo(this.$favouritePicturesPanelRow);
-
-
-    this.$favouritePicturesBodyPanel = $('<div id="pictures-body-panel">')
-        .appendTo(this.$favouritePicturesPanelRow);
-
-
-
-    this.$favouritePicturesControlPanel = $('<div id="pictures-control-panel" class="row">')
-        .appendTo(this.$favouritePicturesPanel);
-
-    this.$favouritePicturesControlPanelForm = $('<div class="col-md-12">')
-        .html('<div class="input-group">' +
-            '<span class="input-group-btn">' +
-                '<button id="help-pictures-btn" class="btn btn-sm btn-default" style="border-radius:0;" type="button">?</button>' +
-            '</span>' +
-            '<span class="input-group-btn">' +
-                '<button id="export-pictures" class="btn btn-sm btn-default" style="border-radius:0;" type="button">' + app.t('favPics[.]Export pictures') + '</button>' +
-            '</span>' +
-             '<span class="input-group-btn">' +
-                '<label for="import-pictures" class="btn btn-sm btn-default" style="border-radius:0;">' + app.t('favPics[.]Import pictures') + '</label>' +
-                '<input type="file" style="display:none;" id="import-pictures" name="pictures-import">' +
-            '</span>' +
-            '<input type="text" id="picture-address" class="form-control input-sm" placeholder="' + app.t('favPics[.]Paste picture url here') + '">' +
-            '<span class="input-group-btn">' +
-                '<button id="add-picture-btn" class="btn btn-sm btn-default" style="border-radius:0;" type="button">' + app.t('favPics[.]Add') + '</button>' +
-            '</span>' +
-        '</div>')
-        .appendTo(this.$favouritePicturesControlPanel);
-
-
-
-
-    this.entityMap = {
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': '&quot;',
-        "'": '&#39;'
-    };
-    this.replaceUnsafeSymbol = function (symbol) {
-        return that.entityMap[symbol];
-    };
-    this.renderFavouritePictures = function () {
-        var favouritePictures = JSON.parse(window.localStorage.getItem('favouritePictures') || '[]') || [];
-
-        this.$favouritePicturesBodyPanel.empty();
-
-        for (var n = 0, favouritePicturesLen = favouritePictures.length; n < favouritePicturesLen; n++) {
-            var escapedAddress = favouritePictures[n].replace(/[&<>"']/g, this.replaceUnsafeSymbol);
-
-            $('<img class="favourite-picture-on-panel">').attr({src: escapedAddress}).appendTo(this.$favouritePicturesBodyPanel);
-        }
-    };
-
-
-    this.insertFavouritePicture = function (address) {
-        app.getModule('utils').done(function (utilsModule) {
-            utilsModule.addMessageToChatInput(' ' + address + ' ', 'end');
-        });
-    };
-    $(document.body).on('click', '.favourite-picture-on-panel', function () {
-        that.insertFavouritePicture($(this).attr('src'));
-    });
-
-
-    this.handleFavouritePicturesPanel = function ($toggleFavouritePicturesPanelBtn) {
-        var smilesAndPicturesTogether = this.smilesAndPicturesTogether || false; //setted up by userConfig module
-
-        if ($('#smiles-panel').length !== 0 && !smilesAndPicturesTogether) {
-            $('#smiles-panel').hide();
-        }
-
-        this.$favouritePicturesPanel.toggle();
-
-
-        if (!smilesAndPicturesTogether) {
-            if ($toggleFavouritePicturesPanelBtn.hasClass('btn-default')) {
-                if ($('#smiles-btn').length !== 0 && $('#smiles-btn').hasClass('btn-success')) {
-                    $('#smiles-btn').removeClass('btn-success');
-                    $('#smiles-btn').addClass('btn-default');
-                }
-
-                $toggleFavouritePicturesPanelBtn.removeClass('btn-default');
-                $toggleFavouritePicturesPanelBtn.addClass('btn-success');
-            } else {
-                $toggleFavouritePicturesPanelBtn.removeClass('btn-success');
-                $toggleFavouritePicturesPanelBtn.addClass('btn-default');
-            }
-        }
-    };
-    this.$toggleFavouritePicturesPanelBtn.on('click', function() {
-        that.handleFavouritePicturesPanel($(this));
-    });
-
-
-    this.addFavouritePicture = function (imageUrl) {
-        if (imageUrl !== '') {
-            var favouritePictures = JSON.parse(window.localStorage.getItem('favouritePictures') || '[]') || [];
-
-            if (favouritePictures.indexOf(imageUrl) === -1) {
-                if (imageUrl !== '') {
-                    favouritePictures.push(imageUrl);
-                }
-            } else {
-                window.makeAlert(app.t('favPics[.]The image already exists')).prependTo(this.$favouritePicturesBodyPanel);
-                $('#picture-address').val('');
-
-                return false;
-            }
-            $('#picture-address').val('');
-
-            window.localStorage.setItem('favouritePictures', JSON.stringify(favouritePictures));
-
-            this.renderFavouritePictures();
-        }
-    };
-    $('#add-picture-btn').on('click', function (e) {
-        e.preventDefault();
-
-        that.addFavouritePicture($('#picture-address').val().trim());
-    });
-    $('#picture-address').on('keypress', function (e) {
-        e.preventDefault();
-
-        if (e.which == 13) {
-            that.addFavouritePicture($('#picture-address').val().trim());
-        }
-    });
-
-
-    this.showHelp = function () {
-        var $modalWindow;
-
-
-        var $wrapper = $('<div class="help-pictures-content">');
-        $wrapper.append($('<p>' + app.t('favPics[.]<p>Favourite pictures feature if for saving favourite pictures like browser bookmarks.</p><p>Features:<ul><li><strong>Only links to images can be saved</strong>, so if image from link was removed, it also removes from your panel.</li><li>Images links are storing in browser. There are export and import buttons to share them between browsers.</li><li>Images are the same for site channels, but <strong>they are different for http:// and https://</strong></li></ul></p>') + '</p>'));
-
-
-        var $exitPicturesHelpBtn = $('<button type="button" id="help-pictures-exit-btn" class="btn btn-info">' + app.t('favPics[.]Exit') + '</button>')
-            .on('click', function () {
-                $modalWindow.modal('hide');
-            });
-        var $footer = $('<div class="help-pictures-footer">');
-        $footer.append($exitPicturesHelpBtn);
-
-
-        app.getModule('utils').done(function (utilsModule) {
-            $modalWindow = utilsModule.createModalWindow(app.t('Help'), $wrapper, $footer);
-        });
-
-
-        return $modalWindow;
-    };
-    $('#help-pictures-btn').on('click', function (e) {
-        e.preventDefault();
-
-        that.showHelp();
-    });
-
-
-    this.exportPictures = function () {
-        var $downloadLink = $('<a>')
-            .attr({
-                href: 'data:text/plain;charset=utf-8,' + encodeURIComponent(window.localStorage.getItem('favouritePictures') || JSON.stringify([])),
-                download: 'cytube_enhanced_favourite_images.txt'
-            })
-            .hide()
-            .appendTo($(document.body));
-
-        $downloadLink[0].click();
-
-        $downloadLink.remove();
-    };
-    $('#export-pictures').on('click', function () {
-        that.exportPictures();
-    });
-
-
-    this.importPictures = function (importFile) {
-        var favouritePicturesAddressesReader = new FileReader();
-
-        favouritePicturesAddressesReader.addEventListener('load', function(e) {
-            window.localStorage.setItem('favouritePictures', e.target.result);
-
-            that.renderFavouritePictures();
-        });
-        favouritePicturesAddressesReader.readAsText(importFile);
-    };
-    $('#import-pictures').on('change', function () {
-        that.importPictures($(this)[0].files[0]);
-    });
-
-
-    this.renderFavouritePictures();
-
-
-
-    this.$favouritePicturesBodyPanel.sortable({
-        containment: this.$favouritePicturesPanelRow,
-        revert: true,
-        update: function(event, ui) {
-            var imageUrl = $(ui.item).attr('src');
-            var nextImageUrl = $(ui.item).next().attr('src');
-            var favouritePictures = JSON.parse(window.localStorage.getItem('favouritePictures') || '[]') || [];
-
-            var imagePosition;
-            if ((imagePosition = favouritePictures.indexOf(imageUrl)) !== -1) {
-                favouritePictures.splice(imagePosition, 1);
-            }
-
-            if (typeof nextImageUrl !== 'undefined') {
-                var nextImagePosition;
-                if ((nextImagePosition = favouritePictures.indexOf(nextImageUrl)) !== -1) {
-                    favouritePictures.splice(nextImagePosition, 0, imageUrl);
-                }
-            } else {
-                favouritePictures.push(imageUrl);
-            }
-
-            window.localStorage.setItem('favouritePictures', JSON.stringify(favouritePictures));
-        }
-    });
-
-
-    this.$favouritePicturesTrash.droppable({
-        accept: ".favourite-picture-on-panel",
-        hoverClass: "favourite-picture-drop-hover",
-        drop: function (event, ui) {
-            var imageUrl = $(ui.draggable).attr('src');
-            var favouritePictures = JSON.parse(window.localStorage.getItem('favouritePictures') || '[]') || [];
-
-            var imagePosition;
-            if ((imagePosition = favouritePictures.indexOf(imageUrl)) !== -1) {
-                favouritePictures.splice(imagePosition, 1);
-                window.localStorage.setItem('favouritePictures', JSON.stringify(favouritePictures));
-            }
-
-            $(ui.draggable).remove();
-        }
-    });
-});
-
-},{}],11:[function(require,module,exports){
-require('jquery-mousewheel')($);
-
-window.cytubeEnhanced.addModule('imagePreview', function (app, settings) {
-    'use strict';
-
-    var that = this;
-
-    var defaultSettings = {
-        selectorsToPreview: '.chat-picture', // 'selector1, selector2'. Every selector's node must have attribute src
-        zoom: 0.15
-    };
-    settings = $.extend({}, defaultSettings, settings);
-
-    this.showPicturePreview = function (pictureToPreview) {
-        if ($(pictureToPreview).is(settings.selectorsToPreview)) {
-            var $picture = $('<img src="' + $(pictureToPreview).attr('src') + '">');
-
-            $picture.ready(function () {
-                $('<div id="modal-picture-overlay">').appendTo($(document.body));
-                var $modalPicture = $('<div id="modal-picture">').appendTo($(document.body)).draggable();
-
-                var pictureWidth = $picture.prop('width');
-                var pictureHeight = $picture.prop('height');
-
-
-                var $modalPictureOptions = $('<div id="modal-picture-options">');
-                $modalPicture.append($('<div id="modal-picture-options-wrapper">').append($modalPictureOptions));
-
-                $('<a href="' + $picture.prop('src') + '" target="_blank" class="btn btn-sm btn-default" style="width:40px;"><i class="glyphicon glyphicon-eye-open"></i></button>')
-                    .appendTo($modalPictureOptions);
-                $('<a href="https://www.google.com/searchbyimage?image_url=' + $picture.prop('src') + '" target="_blank" class="btn btn-sm btn-default" style="width:40px;"><i class="glyphicon glyphicon-search"></i></button>')
-                    .appendTo($modalPictureOptions);
-
-
-                var scaleFactor = 1;
-                if (pictureWidth > document.documentElement.clientWidth && pictureHeight > document.documentElement.clientHeight) {
-                    if ((pictureHeight - document.documentElement.clientHeight) > (pictureWidth - document.documentElement.clientWidth)) {
-                        scaleFactor = pictureHeight / (document.documentElement.clientHeight * 0.8);
-                    } else {
-                        scaleFactor = pictureWidth / (document.documentElement.clientWidth * 0.8);
-                    }
-                } else if (pictureHeight > document.documentElement.clientHeight) {
-                    scaleFactor = pictureHeight / (document.documentElement.clientHeight * 0.8);
-                } else if (pictureWidth > document.documentElement.clientWidth) {
-                    scaleFactor = pictureWidth / (document.documentElement.clientWidth * 0.8);
-                }
-
-                pictureHeight /= scaleFactor;
-                pictureWidth /= scaleFactor;
-
-                $modalPicture.css({
-                    width: pictureWidth,
-                    height: pictureHeight,
-                    marginLeft: -(pictureWidth / 2),
-                    marginTop: -(pictureHeight / 2)
-                });
-
-
-                $picture.appendTo($modalPicture);
-            });
-        }
-    };
-    $(document.body).on('click', function (event) {
-        that.showPicturePreview(event.target);
-    });
-
-
-    this.handleModalPictureMouseWheel = function (e) {
-        var pictureWidth = parseInt($('#modal-picture').css('width'), 10);
-        var pictureHeight = parseInt($('#modal-picture').css('height'), 10);
-        var pictureMarginLeft = parseInt($('#modal-picture').css('marginLeft'), 10);
-        var pictureMarginTop = parseInt($('#modal-picture').css('marginTop'), 10);
-
-        if (e.deltaY > 0) { //up
-            $('#modal-picture').css({
-                width: pictureWidth * (1 + settings.zoom),
-                height: pictureHeight * (1 + settings.zoom),
-                marginLeft: pictureMarginLeft + (-pictureWidth * settings.zoom / 2),
-                marginTop: pictureMarginTop + (-pictureHeight * settings.zoom / 2)
-            });
-        } else { //down
-            $('#modal-picture').css({
-                width: pictureWidth * (1 - settings.zoom),
-                height: pictureHeight * (1 - settings.zoom),
-                marginLeft: pictureMarginLeft + (pictureWidth * settings.zoom / 2),
-                marginTop: pictureMarginTop + (pictureHeight * settings.zoom / 2)
-            });
-        }
-    };
-    $(document.body).on('mousewheel', '#modal-picture', function (e) {
-        that.handleModalPictureMouseWheel(e);
-
-        return false;
-    });
-
-
-    this.closePictureByClick = function () {
-        $('#modal-picture-overlay').remove();
-        $('#modal-picture').remove();
-    };
-    $(document.body).on('click', '#modal-picture-overlay, #modal-picture', function () {
-        that.closePictureByClick();
-    });
-
-    this.closePictureByEscape = function (e) {
-        if (e.which === 27 && $('#modal-picture').length !== 0) {
-            $('#modal-picture-overlay').remove();
-            $('#modal-picture').remove();
-        }
-    };
-    $(document.body).on('keydown', function (e) {
-        that.closePictureByEscape(e);
-    });
-});
-
-},{"jquery-mousewheel":1}],12:[function(require,module,exports){
-
-window.cytubeEnhanced.addModule('navMenuTabs', function (app) {
-    'use strict';
-
-    var that = this;
-
-
-    this.addTabInput = function ($tabsArea, tabName, tabValue) {
-        tabName = tabName || '';
-        tabValue = tabValue || '';
-
-        var $wrapper = $('<div class="row tab-option-wrapper">').appendTo($tabsArea);
-
-        var $tabNameWrapperOfWrapper = $('<div class="col-sm-4 col-md-3">').appendTo($wrapper);
-        var $tabNameWrapper = $('<div class="form-group">').appendTo($tabNameWrapperOfWrapper);
-        $('<input name="title" type="text" class="form-control" placeholder="' + app.t('tabs[.]Title') + '">')
-            .val(tabName)
-            .appendTo($tabNameWrapper);
-
-
-        var $tabValueWrapperOfWrapper = $('<div class="col-sm-8 col-md-9">').appendTo($wrapper);
-        var $tabValueWrapper = $('<div class="form-group">').appendTo($tabValueWrapperOfWrapper);
-        $('<input name="content" type="text" class="form-control" placeholder="' + app.t('tabs[.]Content') + '">')
-            .val(tabValue)
-            .appendTo($tabValueWrapper);
-    };
-
-
-    this.tabsConfigToHtml = function (channelDescription, tabsConfig) {
-        var $virtualMainWrapper = $('<div>');
-
-        if (channelDescription !== undefined && channelDescription !== '') {
-            $('<div id="motd-channel-description">')
-                .html(channelDescription)
-                .appendTo($virtualMainWrapper);
-        }
-
-        if (tabsConfig.length !== 0) {
-            var TAB_TITLE = 0;
-            var TAB_CONTENT = 1;
-            var LINK_TITLE = 0;
-            var LINK_ADDRESS = 1;
-
-            var $tabsWrapper = $('<div id="motd-tabs-wrapper">').appendTo($virtualMainWrapper);
-            var $tabs = $('<div id="motd-tabs">').appendTo($tabsWrapper);
-            var $tabsContent = $('<div id="motd-tabs-content">').appendTo($tabsWrapper);
-
-            for (var tabIndex = 0, tabsLength = tabsConfig.length; tabIndex < tabsLength; tabIndex++) {
-                if (tabsConfig[tabIndex][TAB_TITLE].indexOf('!dropdown!') === 0) {
-                    var $dropdownWrapper = $('<div class="btn-group">');
-                    $('<button type="button" class="btn btn-default dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">')
-                        .html(tabsConfig[tabIndex][TAB_TITLE].replace('!dropdown!', '') + ' <span class="caret"></span>')
-                        .appendTo($dropdownWrapper);
-                    var $dropdownMenu = $('<ul class="dropdown-menu">')
-                        .appendTo($dropdownWrapper);
-
-                    var linksConfig = tabsConfig[tabIndex][TAB_CONTENT];
-                    for (var linkIndex = 0, linksLength = tabsConfig[tabIndex][TAB_CONTENT].length; linkIndex < linksLength; linkIndex++) {
-                        var $link = $('<a>').attr({href: linksConfig[linkIndex][LINK_ADDRESS], target: '_blank'}).text(linksConfig[linkIndex][LINK_TITLE]);
-                        $('<li>').html($link).appendTo($dropdownMenu);
-                    }
-
-                    $dropdownWrapper.appendTo($tabs);
-                } else {
-                    $('<button class="btn btn-default motd-tab-btn" data-tab-index="' + tabIndex + '">')
-                        .html(tabsConfig[tabIndex][TAB_TITLE])
-                        .appendTo($tabs);
-
-                    $('<div class="motd-tab-content" data-tab-index="' + tabIndex + '">')
-                        .hide()
-                        .html(tabsConfig[tabIndex][TAB_CONTENT])
-                        .appendTo($tabsContent);
-                }
-            }
-        }
-
-        return $virtualMainWrapper.html();
-    };
-
-
-    this.tabsHtmlToCondig = function (htmlCode) {
-        this.$tabsArea.empty();
-
-        var $tabsTree = $('<div>').html(htmlCode);
-        var $tabsTreeNavBtns = $tabsTree.find('#motd-tabs').children();
-        var $tabsTreeTabsContent = $tabsTree.find('#motd-tabs-content');
-
-        $('#channel-description-input').val($tabsTree.find('#motd-channel-description').html());
-
-        $tabsTreeNavBtns.each(function () {
-            if ($(this).hasClass('btn-group')) {
-                var parsedDropdownItems = '';
-                var $dropdownItems = $(this).children('ul').children();
-
-                $dropdownItems.each(function () {
-                    var link = $(this).children('a');
-
-                    parsedDropdownItems += '[n]' + link.text() + '[/n][a]' + link.attr('href') + '[/a], ';
-                });
-                parsedDropdownItems = parsedDropdownItems.slice(0, -2);
-
-                that.addTabInput(that.$tabsArea, '!dropdown!' + $(this).children('button').html().replace(' <span class="caret"></span>', ''), parsedDropdownItems);
-            } else {
-                that.addTabInput(that.$tabsArea, $(this).html(), $tabsTreeTabsContent.find('[data-tab-index="' + $(this).data('tabIndex') + '"]').html());
-            }
-        });
-    };
-
-
-    this.motdCutMap = {
-        '<iframe $1>$2</iframe>': /\[iframe(.*?)\](.*?)[/iframe]]/g
-    };
-    this.fixMotdCut = function () {
-        $('#motd-tabs-content').find('.motd-tab-content').each(function () {
-            for (var tag in that.motdCutMap) {
-                if (that.motdCutMap.hasOwnProperty(tag)) {
-                    $(this).html($(this).html().replace(that.motdCutMap[tag], tag));
-                }
-            }
-        });
-    };
-
-
-    this.$tabSettingsBtn = $('<button type="button" class="btn btn-primary motd-bottom-btn" id="show-tabs-settings">')
-        .text(app.t('tabs[.]Show tabs settings (cytube enhanced)'))
-        .appendTo('#cs-motdeditor')
-        .on('click', function () {
-            if ($(this).hasClass('btn-primary')) {
-                that.$tabsSettings.show();
-
-                $(this).removeClass('btn-primary');
-                $(this).addClass('btn-success');
-            } else {
-                that.$tabsSettings.hide();
-
-                $(this).removeClass('btn-success');
-                $(this).addClass('btn-primary');
-            }
-        });
-
-
-    this.$tabsSettings = $('<div id="tabs-settings">')
-        .html('<hr><h3>' + app.t('tabs[.]Tabs settings') + '</h3>')
-        .insertBefore('#cs-motdtext')
-        .hide();
-
-    $('#cs-motdtext').before('<hr>');
-
-
-    this.$channelDescriptionInputWrapper = $('<div class="form-group">').appendTo(this.$tabsSettings);
-    this.$channelDescriptionLabel = $('<label for="channel-description-input">' + app.t('tabs[.]Channel description') + '</label>').appendTo(this.$channelDescriptionInputWrapper);
-    this.$channelDescriptionInput = $('<input id="channel-description-input" placeholder="' + app.t('tabs[.]Channel description') + '" class="form-control">').appendTo(this.$channelDescriptionInputWrapper);
-
-
-    this.$tabsArea = $('<div id="tabs-settings-area">').appendTo(this.$tabsSettings);
-
-    $('<p></p>').insertBefore(this.$tabsArea);
-
-
-    this.$addTabToTabsSettingsBtn = $('<button type="button" class="btn btn-sm btn-primary" id="tabs-settings-add">')
-        .text(app.t('tabs[.]Add tab'))
-        .appendTo(this.$tabsSettings)
-        .on('click', function () {
-            that.addTabInput(that.$tabsArea);
-        });
-
-
-    this.$removeLastTabFromTabsSettingsBtn = $('<button type="button" class="btn btn-sm btn-primary" id="tabs-settings-remove">')
-        .text(app.t('tabs[.]Remove the last tab'))
-        .appendTo(this.$tabsSettings)
-        .on('click', function () {
-            that.$tabsArea.children('.tab-option-wrapper').last().remove();
-        });
-
-
-    this.$tabsToHtml = $('<button type="button" class="btn btn-sm btn-primary" id="tabs-settings-to-html">')
-        .text(app.t('tabs[.]Convert to the editor\'s code'))
-        .appendTo(this.$tabsSettings)
-        .on('click', function () {
-            if (window.confirm(app.t('tabs[.]The code in the editor will be replaced with the new code, continue?'))) {
-                var tabsConfig = []; //list of arrays like [tabTitle, tabContent]
-
-                that.$tabsArea.find('.tab-option-wrapper').each(function () {
-                    var tabName = $(this).find('input[name="title"]').val().trim();
-                    var tabContent = $(this).find('input[name="content"]').val().trim();
-
-                    if (tabName.indexOf('!dropdown!') === 0) {
-                        if (!/^(?:\[n\](.+?)\[\/n\]\[a\](.+?)\[\/a\][ ]*,[ ]*)*\[n\](.+?)\[\/n\]\[a\](.+?)\[\/a\]$/.test(tabContent)) {
-                            window.alert(app.t('tabs[.]Wrong content for the dropdown') + tabName.replace('!dropdown!', '') + '.');
-                            return;
-                        }
-
-                        tabContent = tabContent.split(',').map(function (linkInfo) {
-                            linkInfo = linkInfo.trim().match(/^\[n\](.+?)\[\/n\]\[a\](.+?)\[\/a\]$/);
-
-                            return [linkInfo[1].trim(), linkInfo[2].trim()];
-                        });
-                    }
-
-                    tabsConfig.push([tabName, tabContent]);
-                });
-
-
-                $('#cs-motdtext').val(that.tabsConfigToHtml(that.$channelDescriptionInput.val(), tabsConfig));
-            }
-        });
-
-
-    this.$htmlToTabs = $('<button type="button" class="btn btn-sm btn-primary" id="tabs-settings-from-html">')
-        .text(app.t('tabs[.]Convert from the editor\'s code'))
-        .appendTo(this.$tabsSettings)
-        .on('click', function () {
-            that.tabsHtmlToCondig($('#cs-motdtext').val());
-        });
-
-
-    this.showMotdTab = function ($tabBtn) {
-        var $tabContent = $('#motd-tabs-content').find('[data-tab-index="' + $tabBtn.data('tabIndex') + '"]');
-
-        if ($tabBtn.hasClass('btn-default')) { //closed
-            $('.motd-tab-content').hide();
-            $tabContent.show();
-
-            $('.motd-tab-btn').removeClass('btn-success');
-            $('.motd-tab-btn').addClass('btn-default');
-
-            $tabBtn.removeClass('btn-default');
-            $tabBtn.addClass('btn-success');
-        } else { //opened
-            $tabContent.hide();
-
-            $tabBtn.removeClass('btn-success');
-            $tabBtn.addClass('btn-default');
-        }
-    };
-    $(document.body).on('click', '#motd-tabs .motd-tab-btn', function () {
-        that.showMotdTab($(this));
-    });
-
-
-    this.motdHandleDropdown = function () {
-        $('.motd-tab-btn').removeClass('btn-success');
-        $('.motd-tab-btn').addClass('btn-default');
-
-        $('.motd-tab-content').hide();
-    };
-    $(document.body).on('click', '#motd-tabs .dropdown-toggle', function () {
-        that.motdHandleDropdown();
-    });
-
-
-
-
-    this.tabsHtmlToCondig($('#cs-motdtext').val());
-
-    this.fixMotdCut();
-    window.socket.on('setMotd', function () {
-        that.fixMotdCut();
-    });
-});
-
-},{}],13:[function(require,module,exports){
-/**
- * Saves messages from chat which were sent by other users to you
- */
-window.cytubeEnhanced.addModule('pmHistory', function (app) {
-    'use strict';
-
-    var that = this;
-
-
-    window.socket.on('chatMsg', function (data) {
-        if (window.CLIENT.name && data.msg.toLowerCase().indexOf(window.CLIENT.name.toLowerCase()) != -1) {
-            var pmHistory = JSON.parse(app.userConfig.get('pmHistory') || '[]') || [];
-            if (!$.isArray(pmHistory)) {
-                pmHistory = [];
-            }
-
-            if (pmHistory.length >= 50) {
-                pmHistory.slice(0, 49);
-            }
-
-            pmHistory.unshift({
-                username: data.username.replace(/[^\w-]/g, '\\$'),
-                msg: data.msg,
-                time: data.time
-            });
-
-            app.userConfig.set('pmHistory', JSON.stringify(pmHistory));
-        }
-    });
-
-
-
-    this.formatHistoryMessage = function (data) {
-        var $messageWrapper = $('<div class="pm-history-message">');
-
-
-        var time = (new Date(data.time));
-
-        var day = time.getDate();
-        day = day < 10 ? ('0' + day) : day;
-        var month = time.getMonth();
-        month = month < 10 ? ('0' + month) : month;
-        var year = time.getFullYear();
-        var hours = time.getHours();
-        hours = hours < 10 ? ('0' + hours) : hours;
-        var minutes = time.getMinutes();
-        minutes = minutes < 10 ? ('0' + minutes) : minutes;
-        var seconds = time.getSeconds();
-        seconds = seconds < 10 ? ('0' + seconds) : seconds;
-
-        var timeString = day + '.' + month + '.' + year + ' ' + hours + ':' + minutes + ':' + seconds;
-
-
-
-        $messageWrapper.append($('<div class="pm-history-message-time">[' + timeString + ']</div>'));
-        $messageWrapper.append($('<div class="pm-history-message-username">' + data.username + '</div>'));
-        $messageWrapper.append($('<div class="pm-history-message-content">' + data.msg + '</div>'));
-
-
-        return $messageWrapper;
-    };
-
-    this.showChatHistory = function () {
-        var $modalWindow;
-        var pmHistory = JSON.parse(app.userConfig.get('pmHistory') || '[]') || [];
-        if (!$.isArray(pmHistory)) {
-            pmHistory = [];
-        }
-
-
-        var $wrapper = $('<div class="pm-history-content">');
-        for (var position = 0, historyLength = pmHistory.length; position < historyLength; position++) {
-            $wrapper.append(that.formatHistoryMessage(pmHistory[position]));
-        }
-
-
-        var $resetChatHistoryBtn = $('<button type="button" id="pm-history-reset-btn" class="btn btn-danger">' + app.t('pmHistory[.]Reset history') + '</button>')
-            .on('click', function () {
-                if (window.confirm('pmHistory[.]Are you sure, that you want to clear messages history?')) {
-                    that.resetChatHistory($modalWindow);
-                }
-            });
-        var $exitChatHistoryBtn = $('<button type="button" id="pm-history-exit-btn" class="btn btn-info">' + app.t('pmHistory[.]Exit') + '</button>')
-            .on('click', function () {
-                $modalWindow.modal('hide');
-            });
-        var $footer = $('<div class="pm-history-footer">');
-        $footer.append($resetChatHistoryBtn);
-        $footer.append($exitChatHistoryBtn);
-
-
-        app.getModule('utils').done(function (utilsModule) {
-            $modalWindow = utilsModule.createModalWindow(app.t('pmHistory[.]Chat history'), $wrapper, $footer);
-        });
-    };
-
-    this.$showChatHistoryBtn = $('<span id="pm-history-btn" class="btn btn-sm btn-default pointer">')
-        .text(app.t('pmHistory[.]History'))
-        .appendTo('#chatheader')
-        .on('click', function () {
-            that.showChatHistory();
-        });
-
-
-
-    this.resetChatHistory = function ($modalWindow) {
-        app.userConfig.set('pmHistory', JSON.stringify([]));
-
-        if ($modalWindow != null) {
-            $modalWindow.modal('hide');
-        }
-    };
-});
-},{}],14:[function(require,module,exports){
-window.cytubeEnhanced.addModule('showVideoInfo', function (app) {
-    'use strict';
-
-    var that = this;
-
-
-    this.$titleRow = $('<div id="titlerow" class="row">').insertBefore('#main');
-
-	this.$titleRowOuter = $('<div id="titlerow-outer" class="col-md-12" />')
-        .html($("#currenttitle").text($(".queue_active a").text() !== '' ? $("#currenttitle").text().replace(/^Currently Playing:/, app.t('videoInfo[.]Now:')) : '').detach())
-        .appendTo(this.$titleRow);
-
-
-    this.$mediaInfo = $('<p id="mediainfo">').prependTo("#videowrap");
-
-
-    this.showPlaylistInfo = function () {
-        if ($(".queue_active").length !== 0) {
-            $("#currenttitle").text($("#currenttitle").text().replace(/^Currently Playing:/, app.t('videoInfo[.]Now:')));
-
-            this.$mediaInfo.text($('.queue_active').attr('title').replace('Added by', app.t('videoInfo[.]Added by')));
-        } else {
-            $("#currenttitle").text('');
-
-            this.$mediaInfo.text(app.t('videoInfo[.]Nothing is playing now'));
-        }
-    };
-
-
-
-
-    this.showPlaylistInfo();
-    window.socket.on("changeMedia", function () {
-        that.showPlaylistInfo();
-    });
-});
-
-},{}],15:[function(require,module,exports){
-window.cytubeEnhanced.addModule('smiles', function (app) {
-    'use strict';
-
-    var that = this;
-
-
-    if ($('#chat-panel').length === 0) {
-        $('<div id="chat-panel" class="row">').insertAfter("#main");
-    }
-
-    if ($('#chat-controls').length === 0) {
-        $('<div id="chat-controls" class="">').appendTo("#chatwrap");
-    }
-
-
-    $('#emotelistbtn').hide();
-
-
-    this.$smilesBtn = $('<button id="smiles-btn" class="btn btn-sm btn-default" title="' + app.t('emotes[.]Show emotes') + '">')
-        .html('<i class="glyphicon glyphicon-picture"></i>')
-        .prependTo('#chat-controls');
-
-
-    this.$smilesPanel = $('<div id="smiles-panel" class="section">')
-        .prependTo('#chat-panel')
-        .hide();
-
-
-    this.renderSmiles = function () {
-        var smiles = window.CHANNEL.emotes;
-
-        for (var smileIndex = 0, smilesLen = smiles.length; smileIndex < smilesLen; smileIndex++) {
-            $('<img class="smile-on-panel">')
-                .attr({src: smiles[smileIndex].image})
-                .data('name', smiles[smileIndex].name)
-                .appendTo(this.$smilesPanel);
-        }
-    };
-
-
-    this.insertSmile = function (smileName) {
-        app.getModule('utils').done(function (utilsModule) {
-            utilsModule.addMessageToChatInput(' ' + smileName + ' ', 'end');
-        });
-    };
-    $(document.body).on('click', '.smile-on-panel', function () {
-        that.insertSmile($(this).data('name'));
-    });
-
-
-    this.handleSmileBtn = function ($smilesBtn) {
-        var smilesAndPicturesTogether = this.smilesAndPicturesTogether || false; //setted up by userConfig module
-
-        if ($('#favourite-pictures-panel').length !== 0 && !smilesAndPicturesTogether) {
-            $('#favourite-pictures-panel').hide();
-        }
-
-        this.$smilesPanel.toggle();
-
-        if (!smilesAndPicturesTogether) {
-            if ($smilesBtn.hasClass('btn-default')) {
-                if ($('#favourite-pictures-btn').length !== 0 && $('#favourite-pictures-btn').hasClass('btn-success')) {
-                    $('#favourite-pictures-btn').removeClass('btn-success');
-                    $('#favourite-pictures-btn').addClass('btn-default');
-                }
-
-                $smilesBtn.removeClass('btn-default');
-                $smilesBtn.addClass('btn-success');
-            } else {
-                $smilesBtn.removeClass('btn-success');
-                $smilesBtn.addClass('btn-default');
-            }
-        }
-    };
-    this.$smilesBtn.on('click', function() {
-        that.handleSmileBtn($(this));
-    });
-
-
-
-
-    this.renderSmiles();
-});
-
-},{}],16:[function(require,module,exports){
-window.cytubeEnhanced.addModule('userControlPanel', function (app, settings) {
-    'use strict';
-
-    var that = this;
-
-    var defaultSettings = {
-        layoutConfigButton: false,
-        smilesAndPicturesTogetherButton: false,
-        minimizeButton: false
-    };
-    settings = $.extend({}, defaultSettings, settings);
-
-
-
-
-    this.$configWrapper = $('<div id="config-wrapper" class="col-lg-12 col-md-12">').appendTo("#leftpane-inner");
-    if (!app.userConfig.get('hide-config-panel')) {
-        this.$configWrapper.show();
-    }
-
-    this.$configBody = $('<div id="config-body" class="well form-horizontal">').appendTo(this.$configWrapper);
-
-    this.handleConfigBtn = function () {
-        app.userConfig.toggle('hide-config-panel');
-        this.$configWrapper.toggle();
-    };
-    this.$configBtn = $('<button id="layout-btn" class="btn btn-sm btn-default pull-right">')
-        .html('<span class="glyphicon glyphicon-cog"></span> ' + app.t('userConfig[.]Settings'))
-        .appendTo('#leftcontrols')
-        .on('click', function() {
-            that.handleConfigBtn();
-        });
-
-
-
-
-    this.$layoutForm = $('<div id="layout-config-form" class="form-group">').appendTo(this.$configBody)
-        .append($('<div class="col-lg-3 col-md-3 control-label">' + app.t('userConfig[.]Layout') + '</div>'));
-    this.$layoutWrapper = $('<div id="layout-config-wrapper" class="col-lg-9 col-md-9 text-center">').appendTo(this.$layoutForm);
-    this.$layoutBtnWrapper = $('<div id="layout-config-btn-wrapper" class="btn-group">').appendTo(this.$layoutWrapper);
-    if (!settings.layoutConfigButton && !settings.minimizeButton) {
-        this.$layoutForm.hide();
-    }
-
-
-    this.layoutOptions = {
-        'hide-header': {
-            title: app.t('userConfig[.]Hide header'),
-            default: 'no',
-            values: {
-                yes: app.t('userConfig[.]Yes'),
-                no: app.t('userConfig[.]No')
-            }
-        },
-        'player-position': {
-            title: app.t('userConfig[.]Player position'),
-            default: 'right',
-            values: {
-                left: app.t('userConfig[.]Left'),
-                right: app.t('userConfig[.]Right'),
-                center: app.t('userConfig[.]Center')
-            }
-        },
-        'playlist-position': {
-            title: app.t('userConfig[.]Playlist position'),
-            default: 'right',
-            values: {
-                left: app.t('userConfig[.]Left'),
-                right: app.t('userConfig[.]Right')
-            }
-        },
-        'userlist-position': {
-            title: app.t('userConfig[.]Chat\'s userlist position'),
-            default: 'left',
-            values: {
-                left: app.t('userConfig[.]Left'),
-                right: app.t('userConfig[.]Right')
-            }
-        }
-    };
-
-    this.configUserLayout = function (layoutValues) {
-        var $settingsWrapper = $('<div class="form-horizontal">');
-
-        for (var layoutOption in this.layoutOptions) {
-            if (this.layoutOptions.hasOwnProperty(layoutOption)) {
-                var $formGroup = $('<div class="form-group">').appendTo($settingsWrapper);
-
-                $('<label for="' + layoutOption + '" class="col-sm-2 control-label">' + this.layoutOptions[layoutOption].title + '</label>').appendTo($formGroup);
-
-                var $selectWrapper = $('<div class="col-sm-10">').appendTo($formGroup);
-                var $select = $('<select id="' + layoutOption + '" class="form-control">').appendTo($selectWrapper);
-
-                for (var selectOption in this.layoutOptions[layoutOption].values) {
-                    if (this.layoutOptions[layoutOption].values.hasOwnProperty(selectOption)) {
-                        $('<option value="' + selectOption + '">' + this.layoutOptions[layoutOption].values[selectOption] + '</option>').appendTo($select);
-                    }
-                }
-
-                if (layoutValues.hasOwnProperty(layoutOption)) {
-                    $select.val(layoutValues[layoutOption]);
-                } else {
-                    $select.val(this.layoutOptions[layoutOption].default);
-                }
-            }
-        }
-
-        var $userCssWrapper = $('<div class="form-group">').appendTo($settingsWrapper);
-        $('<label for="user-css" class="col-sm-2 control-label">' + app.t('userConfig[.]User CSS') + '</label>').appendTo($userCssWrapper);
-        var $userCssTextareaWrapper = $('<div class="col-sm-10">').appendTo($userCssWrapper);
-        $('<textarea id="user-css" class="form-control" rows="7">')
-            .appendTo($userCssTextareaWrapper)
-            .val(layoutValues['user-css'] || '');
-
-
-        var $btnWrapper = $('<div>');
-
-        $('<button type="button" id="cancel-user-layout" class="btn btn-info" data-dismiss="modal">' + app.t('userConfig[.]Cancel') + '</button>').appendTo($btnWrapper);
-
-        $('<button type="button" id="reset-user-layout" class="btn btn-danger">' + app.t('userConfig[.]Reset settings') + '</button>')
-            .appendTo($btnWrapper)
-            .on('click', function () {
-                if (window.confirm(app.t('userConfig[.]All the settings including user css will be reset, continue?'))) {
-                    for (var layoutOption in that.layoutOptions) {
-                        if (that.layoutOptions.hasOwnProperty(layoutOption)) {
-                            layoutValues[layoutOption] = that.layoutOptions[layoutOption].default;
-                        }
-                    }
-                    layoutValues['user-css'] = '';
-
-
-                    app.userConfig.set('layout', JSON.stringify(layoutValues));
-
-                    that.applyLayoutSettings(layoutValues);
-
-                    $modalWindow.modal('hide');
-                }
-            });
-
-        $('<button type="button" id="save-user-layout" class="btn btn-success">')
-            .text(app.t('userConfig[.]Save'))
-            .appendTo($btnWrapper)
-            .on('click', function () {
-                for (var layoutOption in that.layoutOptions) {
-                    if (that.layoutOptions.hasOwnProperty(layoutOption)) {
-                        if ($('#' + layoutOption).length !== 0) {
-                            layoutValues[layoutOption] = $('#' + layoutOption).val();
-                        } else {
-                            layoutValues[layoutOption] = that.layoutOptions[layoutOption].default;
-                        }
-                    }
-                }
-                if ($('#user-css').length !== 0) {
-                    layoutValues['user-css'] = $('#user-css').val();
-                } else {
-                    layoutValues['user-css'] = '';
-                }
-
-
-                app.userConfig.set('layout', JSON.stringify(layoutValues));
-
-                that.applyLayoutSettings(layoutValues);
-
-                $modalWindow.modal('hide');
-            });
-
-
-        var $modalWindow;
-        app.getModule('utils').done(function (utilsModule) {
-            $modalWindow = utilsModule.createModalWindow(app.t('userConfig[.]Layout settings'), $settingsWrapper, $btnWrapper);
-        });
-    };
-
-    this.applyLayoutSettings = function (layoutValues) {
-        if (layoutValues['hide-header'] === 'yes') {
-            $('#motdrow').hide();
-            $('#motdrow').data('hiddenByLayout', '1');
-        } else {
-            if ($('#motdrow').data('hiddenByMinimize') !== '1') {
-                $('#motdrow').show();
-            }
-            $('#motdrow').data('hiddenByLayout', '0');
-        }
-
-        if (layoutValues['player-position'] === 'left') {
-            if ($('#chatwrap').hasClass('col-md-10 col-md-offset-1')) {
-                $('#chatwrap').removeClass('col-md-10 col-md-offset-1');
-                $('#chatwrap').addClass('col-lg-5 col-md-5');
-            }
-            if ($('#videowrap').hasClass('col-md-10 col-md-offset-1')) {
-                $('#videowrap').removeClass('col-md-10 col-md-offset-1');
-                $('#videowrap').addClass('col-lg-7 col-md-7');
-            }
-
-            $('#videowrap').detach().insertBefore($('#chatwrap'));
-        } else if (layoutValues['player-position'] === 'center') {
-            $('#chatwrap').removeClass(function (index, css) { //remove all col-* classes
-                return (css.match(/(\s)*col-(\S)+/g) || []).join('');
-            });
-            $('#videowrap').removeClass(function (index, css) { //remove all col-* classes
-                return (css.match(/(\s)*col-(\S)+/g) || []).join('');
-            });
-
-            $('#chatwrap').addClass('col-md-10 col-md-offset-1');
-            $('#videowrap').addClass('col-md-10 col-md-offset-1');
-
-            $('#videowrap').detach().insertBefore($('#chatwrap'));
-        } else { //right
-            if ($('#chatwrap').hasClass('col-md-10 col-md-offset-1')) {
-                $('#chatwrap').removeClass('col-md-10 col-md-offset-1');
-                $('#chatwrap').addClass('col-lg-5 col-md-5');
-            }
-            if ($('#videowrap').hasClass('col-md-10 col-md-offset-1')) {
-                $('#videowrap').removeClass('col-md-10 col-md-offset-1');
-                $('#videowrap').addClass('col-lg-7 col-md-7');
-            }
-
-//            $('#chatwrap').detach().insertBefore($('#videowrap'));
-        }
-
-        if (layoutValues['playlist-position'] === 'left') {
-            $('#rightcontrols').detach().insertBefore($('#leftcontrols'));
-            $('#rightpane').detach().insertBefore($('#leftpane'));
-        } else { //right
-            $('#leftcontrols').detach().insertBefore($('#rightcontrols'));
-            $('#leftpane').detach().insertBefore($('#rightpane'));
-        }
-
-        if (layoutValues['userlist-position'] === 'right') {
-            $('#userlist').addClass('pull-right');
-        } else { //left
-            $('#userlist').removeClass('pull-right');
-        }
-
-        if (layoutValues.hasOwnProperty('user-css') && layoutValues['user-css'] !== '') {
-            $("head").append('<style id="user-style" type="text/css">' + layoutValues['user-css'] + '</style>');
-        } else if ($('#user-style').length !== 0) {
-            $('#user-style').remove();
-        }
-
-
-        $('#refresh-video').click();
-    };
-
-    this.handleLayout = function () {
-        var userLayout;
-        try {
-            userLayout = window.JSON.parse(app.userConfig.get('layout')) || {};
-        } catch (e) {
-            userLayout = {};
-        }
-
-        this.configUserLayout(userLayout);
-    };
-    this.$layoutConfigBtn = $('<button id="layout-configuration-btn" class="btn btn-default">')
-        .text(app.t('userConfig[.]Settings'))
-        .appendTo(this.$layoutBtnWrapper)
-        .on('click', function() {
-            that.handleLayout();
-        });
-
-    var userLayout;
-    if (settings.layoutConfigButton) {
-        try {
-            userLayout = window.JSON.parse(app.userConfig.get('layout')) || {};
-        } catch (e) {
-            userLayout = {};
-        }
-
-        this.applyLayoutSettings(userLayout);
-    } else {
-        this.$layoutConfigBtn.hide();
-    }
-
-
-
-
-
-    
-    this.applyMinimize = function (isMinimized) {
-        if (isMinimized) {
-            $('#motdrow').data('hiddenByMinimize', '1');
-            $('#motdrow').hide();
-            $('#queue').parent().hide();
-
-            that.$minBtn.removeClass('btn-default');
-            that.$minBtn.addClass('btn-success');
-        } else {
-            if ($('#motdrow').data('hiddenByLayout') !== '1') {
-                $('#motdrow').show();
-            }
-            $('#motdrow').data('hiddenByMinimize', '0');
-            $('#queue').parent().show();
-
-            that.$minBtn.removeClass('btn-success');
-            that.$minBtn.addClass('btn-default');
-        }
-    };
-
-    this.$minBtn = $('<button id="layout-min-btn" class="btn btn-default">')
-        .text(app.t('userConfig[.]Minimize'))
-        .appendTo(this.$layoutBtnWrapper)
-        .on('click', function() {
-            that.applyMinimize(app.userConfig.toggle('isMinimized'));
-        });
-
-    if (settings.minimizeButton) {
-        this.applyMinimize(app.userConfig.get('isMinimized'));
-    } else {
-        this.$minBtn.hide();
-    }
-
-
-
-
-    this.$commonConfigForm = $('<div id="common-config-form" class="form-group">')
-        .append($('<div class="col-lg-3 col-md-3 control-label">').text(app.t('userConfig[.]Common')))
-        .appendTo(this.$configBody);
-    this.$commonConfigWrapper = $('<div id="common-config-wrapper" class="col-lg-9 col-md-9 text-center">').appendTo(this.$commonConfigForm);
-    this.$commonConfigBtnWrapper = $('<div id="common-config-btn-wrapper" class="btn-group">').appendTo(this.$commonConfigWrapper);
-
-    if (!(settings.smilesAndPicturesTogetherButton && app.isModulePermitted('smiles') && app.isModulePermitted('favouritePictures'))) {
-        this.$commonConfigForm.hide();
-    }
-
-
-    this.applySmilesAndPictures = function (isTurnedOn) {
-        app.getModule('smiles').done(function (smilesModule) {
-            smilesModule.smilesAndPicturesTogether = isTurnedOn;
-        });
-
-        app.getModule('favouritePictures').done(function (favouritePicturesModule) {
-            favouritePicturesModule.smilesAndPicturesTogether = isTurnedOn;
-        });
-
-
-        if (isTurnedOn) {
-            that.$smilesAndPicturesBtn.removeClass('btn-default');
-            that.$smilesAndPicturesBtn.addClass('btn-success');
-
-            $('#smiles-btn').hide();
-            $('#smiles-panel').hide();
-            $('#smiles-btn').addClass('btn-default');
-            $('#smiles-btn').removeClass('btn-success');
-
-            $('#favourite-pictures-btn').hide();
-            $('#favourite-pictures-panel').hide();
-            $('#favourite-pictures-btn').addClass('btn-default');
-            $('#favourite-pictures-btn').removeClass('btn-success');
-
-            $('<button id="smiles-and-picture-btn" class="btn btn-sm btn-default" title="' + app.t('userConfig[.]Show emotes and favorite images') + '">')
-                .html('<i class="glyphicon glyphicon-picture"></i> ? <i class="glyphicon glyphicon-th"></i>')
-                .prependTo($('#chat-controls'))
-                .on('click', function () {
-                    $('#smiles-btn').click();
-                    $('#favourite-pictures-btn').click();
-
-                    if ($(this).hasClass('btn-default')) {
-                        $(this).removeClass('btn-default');
-                        $(this).addClass('btn-success');
-                    } else {
-                        $(this).removeClass('btn-success');
-                        $(this).addClass('btn-default');
-                    }
-                });
-        } else {
-            if ($('#smiles-and-picture-btn').length !== 0) {
-                $('#smiles-and-picture-btn').remove();
-            }
-
-            that.$smilesAndPicturesBtn.removeClass('btn-success');
-            that.$smilesAndPicturesBtn.addClass('btn-default');
-
-            $('#smiles-btn').show();
-            $('#favourite-pictures-btn').show();
-
-            $('#smiles-panel').hide();
-            $('#favourite-pictures-panel').hide();
-        }
-    };
-
-    this.$smilesAndPicturesBtn = $('<button id="common-config-smiles-and-pictures-btn" class="btn btn-default">')
-        .html('<i class="glyphicon glyphicon-picture"></i> ' + app.t('userConfig[.]and') + ' <i class="glyphicon glyphicon-th"></i>')
-        .appendTo(that.$commonConfigBtnWrapper)
-        .on('click', function() {
-            that.applySmilesAndPictures(app.userConfig.toggle('smiles-and-pictures'));
-        });
-
-    if (settings.smilesAndPicturesTogetherButton && app.isModulePermitted('smiles') && app.isModulePermitted('favouritePictures')) {
-        this.applySmilesAndPictures(app.userConfig.get('smiles-and-pictures'));
-    } else {
-        this.$smilesAndPicturesBtn.hide();
-    }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    this.$avatarsForm = $('<div id="avatars-config-form" class="form-group">').appendTo(this.$configBody)
-        .append($('<div class="col-lg-3 col-md-3 control-label">' + app.t('userConfig[.]Chat avatars') + '</div>'));
-    this.$avatarsWrapper = $('<div id="avatars-config-wrapper" class="col-md-8 col-md-offset-1 col-lg-6 col-lg-offset-2 text-center">').appendTo(this.$avatarsForm);
-
-
-    this.handleAvatars = function (mode) {
-        app.userConfig.set('avatarsMode', mode);
-        var previousModeInTurnedOff = false;
-
-        $('.username').each(function () {
-            var $avatar;
-            var username = $(this).text().replace(/^\s+|[:]?\s+$/g, '');
-            var $messageBlock = $(this).parent();
-
-            if ($('.chat-avatar').length === 0) {
-                previousModeInTurnedOff = true;
-            }
-
-            if ((mode == 'small' || mode == 'big') && previousModeInTurnedOff) {
-                var avatarCssClasses = (mode == 'big' ? 'chat-avatar chat-avatar_big' : 'chat-avatar chat-avatar_small');
-
-                if ((window.findUserlistItem(username) != null) && (window.findUserlistItem(username).data('profile').image != "")) {
-                    $avatar = $("<img>").attr("src", window.findUserlistItem(username).data('profile').image)
-                        .addClass(avatarCssClasses)
-                        .prependTo($messageBlock);
-                }
-            }
-
-            if (mode == 'big') {
-                $avatar = $messageBlock.find('.chat-avatar');
-                if ($avatar.length !== 0) {
-                    $avatar.attr('title', username);
-                }
-
-                $(this).css('display', 'none');
-            } else {
-                $(this).css('display', 'inline-block');
-
-                $avatar = $messageBlock.find('.chat-avatar');
-                if ($avatar.length !== 0) {
-                    $avatar.removeAttr('title');
-                }
-            }
-        });
-
-        if (mode == 'small') {
-            $('.chat-avatar_big').removeClass('chat-avatar_big').addClass('chat-avatar_small');
-        } else if (mode == 'big') {
-            $('.chat-avatar_small').removeClass('chat-avatar_small').addClass('chat-avatar_big');
-        }
-    };
-    this.$avatarsSelect = $('<select class="form-control">')
-        .append('<option value="">' + app.t('userConfig[.]Small') + '</option>')
-        .append('<option value="small">' + app.t('userConfig[.]Small') + '</option>')
-        .append('<option value="big">' + app.t('userConfig[.]Big') + '</option>')
-        .appendTo(this.$avatarsWrapper)
-        .on('change', function () {
-            that.handleAvatars($(this).val());
-        });
-
-    this.$avatarsSelect.find('option[value="' + app.userConfig.get('avatarsMode') + '"]').prop('selected', true);
-});
-
-},{}],17:[function(require,module,exports){
-window.cytubeEnhanced.addModule('utils', function (app, settings) {
-    'use strict';
-
-    var that = this;
-
-    var defaultSettings = {
-        unfixedTopNavbar: true,
-        insertUsernameOnClick: true,
-        showScriptInfo: true
-    };
-    settings = $.extend({}, defaultSettings, settings);
-
-
-
-    //$('#messagebuffer, #queue').nanoScroller({
-    //    alwaysVisible: true,
-    //    preventPageScrolling: true
-    //});
-    //
-    //this.handleChatScrollBar = function() {
-    //    $('#messagebuffer')[0].nanoscroller.reset();
-    //};
-    //window.socket.on("chatMsg", that.handleChatScrollBar);
-    //window.socket.on("clearchat", that.handleChatScrollBar);
-    //
-    //this.handlePlaylistScrollBar = function() {
-    //    $('#queue')[0].nanoscroller.reset();
-    //};
-    //window.socket.on("playlist", that.handlePlaylistScrollBar);
-    //window.socket.on("queue", that.handlePlaylistScrollBar);
-    //window.socket.on("setPlaylistMeta", that.handlePlaylistScrollBar);
-    //
-    //$(window).resize(function () {
-    //    $('#messagebuffer, #queue')[0].nanoscroller.reset();
-    //});
-
-    window.chatTabComplete = function () {
-        var i;
-        var words = $("#chatline").val().split(" ");
-        var current = words[words.length - 1].toLowerCase();
-        if (!current.match(/^[\w-]{1,20}$/)) {
-            return;
-        }
-
-        var __slice = Array.prototype.slice;
-        var usersWithCap = __slice.call($("#userlist .userlist_item")).map(function (elem) {
-            return elem.children[1].innerHTML;
-        });
-        var users = __slice.call(usersWithCap).map(function (user) {
-            return user.toLowerCase();
-        }).filter(function (name) {
-            return name.indexOf(current) === 0;
-        });
-
-        // users now contains a list of names that start with current word
-
-        if (users.length === 0) {
-            return;
-        }
-
-        // trim possible names to the shortest possible completion
-        var min = Math.min.apply(Math, users.map(function (name) {
-            return name.length;
-        }));
-        users = users.map(function (name) {
-            return name.substring(0, min);
-        });
-
-        // continually trim off letters until all prefixes are the same
-        var changed = true;
-        var iter = 21;
-        while (changed) {
-            changed = false;
-            var first = users[0];
-            for (i = 1; i < users.length; i++) {
-                if (users[i] !== first) {
-                    changed = true;
-                    break;
-                }
-            }
-
-            if (changed) {
-                users = users.map(function (name) {
-                    return name.substring(0, name.length - 1);
-                });
-            }
-
-            // In the event something above doesn't generate a break condition, limit
-            // the maximum number of repetitions
-            if (--iter < 0) {
-                break;
-            }
-        }
-
-        current = users[0].substring(0, min);
-        for (i = 0; i < usersWithCap.length; i++) {
-            if (usersWithCap[i].toLowerCase() === current) {
-                current = usersWithCap[i];
-                break;
-            }
-        }
-
-        if (users.length === 1) {
-            if (words.length === 1) {
-                current += ":";
-            }
-            current += " ";
-        }
-        words[words.length - 1] = current;
-        $("#chatline").val(words.join(" "));
-    };
-
-
-    /**
-     * Adds the text to chat input
-     * @param message The text to add.
-     * @param position The position of the adding. It can be 'begin' or 'end'.
-     */
-    this.addMessageToChatInput = function (message, position) {
-        position = position || 'end';
-
-        if (position === 'begin') {
-            message = message + $("#chatline").val();
-        } else {
-            message = $("#chatline").val() + message;
-        }
-
-        $('#chatline').val(message).focus();
-    };
-
-
-    if (settings.insertUsernameOnClick) {
-        $('#messagebuffer').on('click', '.username', function() {
-            that.addMessageToChatInput($(this).text(), 'begin');
-        });
-        $('#messagebuffer').on('click', '.chat-avatar', function() {
-            that.addMessageToChatInput($(this).parent().find('.username').text(), 'begin');
-        });
-    }
-
-
-    this.createModalWindow = function($headerContent, $bodyContent, $footerContent) {
-        var $outer = $('<div class="modal fade chat-help-modal" role="dialog" tabindex="-1">').appendTo($("body"));
-        var $modal = $('<div class="modal-dialog modal-lg">').appendTo($outer);
-        var $content = $('<div class="modal-content">').appendTo($modal);
-
-        if ($headerContent != null) {
-            var $header = $('<div class="modal-header">').appendTo($content);
-
-            $('<button type="button" class="close" data-dismiss="modal" aria-label="???????">').html('<span aria-hidden="true">&times;</span>').appendTo($header);
-            $('<h3 class="modal-title">').append($headerContent).appendTo($header);
-        }
-
-        if ($bodyContent != null) {
-            $('<div class="modal-body">').append($bodyContent).appendTo($content);
-        }
-
-        if ($footerContent != null) {
-            $('<div class="modal-footer">').append($footerContent).appendTo($content);
-        }
-
-        $outer.on('hidden.bs.modal', function () {
-            $(this).remove();
-        });
-
-        $outer.modal({keyboard: true});
-
-        return $outer;
-    };
-
-
-
-    if (settings.unfixedTopNavbar) {
-        $('#wrap').children('.navbar-fixed-top').removeClass('navbar-fixed-top');
-    }
-
-   
-
-    setTimeout(function () {
-        window.handleWindowResize(); //chat height fix
-    }, 3000);
-    setTimeout(function () {
-        window.handleWindowResize(); //chat height fix
-    }, 10000);
-
-
-
-
-
-    window.addUserDropdown = (function (oldAddUserDropdown) {
-        return function (entry) {
-            var functionResponse = oldAddUserDropdown(entry);
-
-            entry.find('.user-dropdown>strong').click(function () {
-                $(chatline).val($(this).text() + ": " + $(chatline).val());
-            });
-
-            return functionResponse;
-        };
-    })(window.addUserDropdown);
-
-    $('.user-dropdown>strong').click(function () {
-        $('#chatline').val($(this).text() + ": " + $(chatline).val()).focus();
-    });
-
-
-
-
-
-
-
- //   $('#queue').sortable("option", "axis", "y");
-});
-},{}],18:[function(require,module,exports){
-window.cytubeEnhanced.addModule('videoControls', function (app, settings) {
-    'use strict';
-
-    var that = this;
-
-    var defaultSettings = {
-        turnOffVideoOption: true,
-        selectQualityOption: true,
-        expandPlaylistOption: true,
-        showVideoContributorsOption: true,
-        playlistHeight: 500
-    };
-    settings = $.extend({}, defaultSettings, settings);
-
-    $('#mediarefresh').hide();
-
-
-    this.$topVideoControls = $('<div id="top-video-controls" class="btn-group">').appendTo("#nav-collapsible");
-
-    this.refreshVideo = function () {
-        $('#mediarefresh').click();
-    };
-    this.$refreshVideoBtn = $('<button id="refresh-video" class="btn btn-sm btn-default" title="' + app.t('video[.]Refresh video') + '">')
-        .html('<i class="glyphicon glyphicon-refresh">')
-        .appendTo(this.$topVideoControls)
-        .on('click', function () {
-            that.refreshVideo();
-        });
-
-
-    this.hidePlayer = function ($hidePlayerBtn) {
-        if ($hidePlayerBtn.hasClass('btn-default')) { //video visible
-            var $playerWindow = $('#videowrap').find('.embed-responsive');
-            $playerWindow.css({position: 'relative'});
-
-            $('<div id="player-overlay">').appendTo($playerWindow);
-
-            $hidePlayerBtn.html('<i class="glyphicon glyphicon-film">');
-            $hidePlayerBtn.removeClass('btn-default');
-            $hidePlayerBtn.addClass('btn-success');
-        } else { //video hidden
-            $('#player-overlay').remove();
-
-            $hidePlayerBtn.html('<i class="glyphicon glyphicon-ban-circle">');
-            $hidePlayerBtn.removeClass('btn-success');
-            $hidePlayerBtn.addClass('btn-default');
-        }
-    };
-    this.$hidePlayerBtn = $('<button id="hide-player-btn" class="btn btn-sm btn-default" title="' + app.t('video[.]Hide video') + '">')
-        .html('<i class="glyphicon glyphicon-ban-circle">')
-        .appendTo(this.$topVideoControls)
-        .on('click', function() {
-            that.hidePlayer($(this));
-        });
-    if (!settings.turnOffVideoOption) {
-        this.$hidePlayerBtn.hide();
-    }
-
-
-    this.qualityLabelsTranslate = {
-        auto: 'ass',
-        240: '240p',
-        360: '360p',
-        480: '480p',
-        720: '720p',
-        1080: '1080p',
-        best: app.t('video[.]best')
-    };
-    var qualityLabelsTranslateOrder = ['auto', 240, 360, 480, 720, 1080, 'best'];
-
-    this.$videoQualityBtnGroup = $('<div class="btn-group">')
-        .html('<button type="button" class="btn btn-default btn-sm video-dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">' + app.t('video[.]Quality') + ': ' + this.qualityLabelsTranslate[window.USEROPTS.default_quality || 'auto'] + ' <span class="caret"></span></button>')
-        .appendTo(this.$topVideoControls);
-
-    this.$videoQualityList = $('<ul class="dropdown-menu">');
-    for (var labelIndex = 0, labelsLength = qualityLabelsTranslateOrder.length; labelIndex < labelsLength; labelIndex++) {
-        $('<li>')
-            .html('<a href="#" data-quality="' + qualityLabelsTranslateOrder[labelIndex] + '">' + this.qualityLabelsTranslate[qualityLabelsTranslateOrder[labelIndex]] + '</a>')
-            .appendTo(this.$videoQualityList);
-    }
-    this.$videoQualityList.appendTo(this.$videoQualityBtnGroup);
-
-    this.changeVideoQuality = function ($qualityLink) {
-        this.settingsFix();
-        $("#us-default-quality").val($qualityLink.data('quality'));
-        window.saveUserOptions();
-
-        this.$refreshVideoBtn.click();
-
-        this.$videoQualityBtnGroup.find('button').html(app.t('video[.]Quality') + ': ' + $qualityLink.text() + ' <span class="caret"></span>');
-        $('.video-dropdown-toggle').dropdown();
-    };
-    this.$videoQualityBtnGroup.on('click', 'a', function () {
-        that.changeVideoQuality($(this));
-
-        return false;
-    });
-
-    $("#us-default-quality").on('change', function () {
-        that.$videoQualityBtnGroup.find('button').html(app.t('video[.]Quality') + ': ' + that.qualityLabelsTranslate[$(this).val()] + ' <span class="caret"></span>');
-    });
-
-    if (!settings.selectQualityOption) {
-        this.$videoQualityBtnGroup.hide();
-    }
-
-
-    this.settingsFix = function () {
-        $("#us-theme").val(window.USEROPTS.theme);
-        $("#us-layout").val(window.USEROPTS.layout);
-        $("#us-no-channelcss").prop("checked", window.USEROPTS.ignore_channelcss);
-        $("#us-no-channeljs").prop("checked", window.USEROPTS.ignore_channeljs);
-
-        $("#us-synch").prop("checked", window.USEROPTS.synch);
-        $("#us-synch-accuracy").val(window.USEROPTS.sync_accuracy);
-        $("#us-wmode-transparent").prop("checked", window.USEROPTS.wmode_transparent);
-        $("#us-hidevideo").prop("checked", window.USEROPTS.hidevid);
-        $("#us-playlistbuttons").prop("checked", window.USEROPTS.qbtn_hide);
-        $("#us-oldbtns").prop("checked", window.USEROPTS.qbtn_idontlikechange);
-        $("#us-default-quality").val(window.USEROPTS.default_quality || "auto");
-
-        $("#us-chat-timestamp").prop("checked", window.USEROPTS.show_timestamps);
-        $("#us-sort-rank").prop("checked", window.USEROPTS.sort_rank);
-        $("#us-sort-afk").prop("checked", window.USEROPTS.sort_afk);
-        $("#us-blink-title").val(window.USEROPTS.blink_title);
-        $("#us-ping-sound").val(window.USEROPTS.boop);
-        $("#us-sendbtn").prop("checked", window.USEROPTS.chatbtn);
-        $("#us-no-emotes").prop("checked", window.USEROPTS.no_emotes);
-
-        $("#us-modflair").prop("checked", window.USEROPTS.modhat);
-        $("#us-joinmessage").prop("checked", window.USEROPTS.joinmessage);
-        $("#us-shadowchat").prop("checked", window.USEROPTS.show_shadowchat);
-    };
-
-
-    this.expandPlaylist = function ($expandPlaylistBtn) {
-        if ($expandPlaylistBtn.hasClass('btn-success')) {//expanded
-            $('#queue').css('max-height', settings.playlistHeight + 'px');
-
-            $expandPlaylistBtn.attr('title', app.t('video[.]Expand playlist'));
-
-            $expandPlaylistBtn.removeClass('btn-success');
-            $expandPlaylistBtn.addClass('btn-default');
-        } else {//not expanded
-            $('#queue').css('max-height', '100000px');
-
-            $expandPlaylistBtn.attr('title', app.t('video[.]Unexpand playlist'));
-
-            $expandPlaylistBtn.removeClass('btn-default');
-            $expandPlaylistBtn.addClass('btn-success');
-
-            window.scrollQueue();
-        }
-    };
-    this.$expandPlaylistBtn = $('<button id="expand-playlist-btn" class="btn btn-sm btn-default" data-expanded="0" title="' + app.t('video[.]Expand playlist') + '">')
-        .append('<span class="glyphicon glyphicon-resize-full">')
-        .prependTo('#videocontrols')
-        .on('click', function() {
-            that.expandPlaylist($(this));
-        });
-    if (!settings.expandPlaylistOption) {
-        this.$expandPlaylistBtn.hide();
-    }
-
-
-    this.$scrollToCurrentBtn = $('<button id="scroll-to-current-btn" class="btn btn-sm btn-default" title="' + app.t('video[.]Scroll the playlist to the current video') + '">')
-        .append('<span class="glyphicon glyphicon-hand-right">')
-        .prependTo('#videocontrols')
-        .on('click', function() {
-            window.scrollQueue();
-        });
-
-
-    this.showVideoContributorsList = function () {
-        var $bodyWrapper = $('<div>');
-
-        var contributorsList = {};
-        $("#queue .queue_entry").each(function () {
-            var username = $(this).attr('title').replace('Added by: ', '');
-
-            if (contributorsList[username] === undefined) {
-                contributorsList[username] = 1;
-            } else {
-                contributorsList[username] += 1;
-            }
-        });
-
-        $bodyWrapper.append($('<p>' + app.t('video[.]Video\'s count') + ': ' + ($("#queue .queue_entry").length + 1) + '</p>'));
-
-        var $contributorsListOl = $('<ol>');
-        for (var contributor in contributorsList) {
-            if (contributorsList.hasOwnProperty(contributor)) {
-                $contributorsListOl.append($('<li>' + contributor + ': ' + contributorsList[contributor] + '.</li>'));
-            }
-        }
-        $contributorsListOl.appendTo($bodyWrapper);
-
-        app.getModule('utils').done(function (utilsModule) {
-            utilsModule.createModalWindow(app.t('video[.]Contributors\' list'), $bodyWrapper);
-        });
-    };
-    this.$videoContributorsBtn = $('<button id="video-contributors-btn" class="btn btn-sm btn-default" title="' + app.t('video[.]Contributors\' list') + '">')
-        .append('<span class="glyphicon glyphicon-user">')
-        .prependTo('#videocontrols')
-        .on('click', function() {
-            that.showVideoContributorsList();
-        });
-    if (!settings.showVideoContributorsOption) {
-        this.$videoContributorsBtn.hide();
-    }
-});
-
-},{}],19:[function(require,module,exports){
-/**
- * Fork of https://github.com/mickey/videojs-progressTips
- */
-window.cytubeEnhanced.addModule('videojsProgress', function () {
-    'use strict';
-
-    var that = this;
-
-   // this.$Skip = $(".vjs-error-display").append($("#voteskip"));
-    this.$Pre = $("#ytapiplayer_html5_api").attr("preload", "false");
-    
-    this.handleProgress = function () {
-        if (window.PLAYER instanceof window.VideoJSPlayer) {
-            if (window.PLAYER.player.techName === 'Html5' || window.PLAYER.player.Ua === 'Html5') { //Ua is uglifier mangle
-                var $tipWrapper = $('<div class="vjs-tip">').insertAfter('.vjs-progress-control');
-                var $tipBody = $('<div class="vjs-tip-body">').appendTo($tipWrapper);
-                $('<div class="vjs-tip-body-arrow">').appendTo($tipBody);
-                var $tipInner = $('<div class="vjs-tip-body-inner">').appendTo($tipBody);
-
-                $('.vjs-progress-control').on('mousemove', function(e) {
-                    var $seekBar = $(window.PLAYER.player.controlBar.progressControl.seekBar.el());
-                    var pixelsInSecond = $seekBar.outerWidth() / window.PLAYER.player.duration();
-                    var mousePositionInPlayer = e.pageX - $seekBar.offset().left;
-
-                    var timeInSeconds = mousePositionInPlayer / pixelsInSecond;
-
-
-                    var hours = Math.floor(timeInSeconds / 3600);
-
-                    var minutes = hours > 0 ? Math.floor((timeInSeconds % 3600) / 60) : Math.floor(timeInSeconds / 60);
-                    if (minutes < 10 && hours > 0) {
-                        minutes = '0' + minutes;
-                    }
-
-                    var seconds = Math.floor(timeInSeconds % 60);
-                    if (seconds < 10) {
-                        seconds = '0' + seconds;
-                    }
-
-                    if (hours > 0) {
-                        $tipInner.text(hours + ':' + minutes + ':' + seconds);
-                    } else {
-                        $tipInner.text(minutes + ":" + seconds);
-                    }
-
-                    $tipWrapper.css('top', -($('.vjs-control-bar').height() + $('.vjs-progress-control').height()) + 'px')
-                        .css('left', (e.pageX - $('.vjs-control-bar').offset().left - $tipInner.outerWidth() / 2)+ 'px')
-                        .show();
-                });
-                
-                 //$("#ytapiplayer_html5_api").attr("preload", "auto");
-                 //$(".vjs-error-display").append($("#voteskip"));
-                 
-                $('.vjs-progress-control, .vjs-play-control').on('mouseout', function() {
-                    $tipWrapper.hide();
-                });
-            }
-        }
-    };
-
-    this.handleProgress();
-    window.socket.on('changeMedia', function () {
-        that.handleProgress();
-    });
-});
-$("#messagebuffer").before("<div class='menu2bar'></div>");
-$(".menu2bar").append($("#afk-btn"));
-$(".menu2bar").append($("#clear-chat-btn"));
-$(".menu2bar").append($("#pm-history-btn"));
-//$(".vjs-error-display").append($("#voteskip"));
-
-function reload() { 
-   video.load(); 
+@import url(//fonts.googleapis.com/css?family=Montserrat:400,700);
+@import url(//fonts.googleapis.com/css?family=Quicksand:400,700);
+
+#chatsettings {
+    display: none;
 }
 
-videojs("ytapiplayer_html5_api").ready(function(){
-    this.volume(1);
-});
+* {
+  box-sizing: border-box;
+  -webkit-touch-callout: none;
+}
+.navbar-inverse .navbar-nav>li>a, .navbar-inverse .navbar-text {
+    color: #a2a09f8c;
+    text-transform: uppercase;
+    font-size: 8px;
+}
+#modflair {
+ display:none;   
+}
+.channel-emote {
+    min-width: 70px;
+}
+body {
+    font-size: 1.3em;
+    font-family: 'Montserrat', sans-serif;
+    color: #e5f1f7e8;
+    background-color: rgb(28,31,37);
+    text-align: justify;
+}
+.btn-group-xs>.btn, .btn-xs {
+    padding: 7px 12px;
+    font-size: 9px;
+    line-height: 1.5;
+    border-radius: 12px;
+}
+.btn-default {
+    color: #e6e2e5;
+    background-color: rgba(18, 18, 20, 0.87);
+    border-color: rgba(132, 142, 152, 0);
+    background-image: none!important;
+}
+#videocontrols {
+    float: right;
+    top: 10px;
+    padding-right: 5px;
+}
+.lel {
+    background: rgba(16, 16, 16, 0.21);
+    border: 1px solid #191919;
+}
+/* NanoScroller */
+	/** initial setup **/
+	.nano {
+	  position : relative;
+	  /*width    : 100%;
+	  height   : 100%;*/
+	  overflow : hidden;
+	}
+	.nano > .nano-content {
+	  position      : absolute;
+	  overflow      : scroll;
+	  overflow-x    : hidden;
+	  top           : 0;
+	  right         : 0;
+	  bottom        : 0;
+	  left          : 0;
+	  margin-right: 0px!important;
+	}
+	.nano > .nano-content:focus {
+	  outline: thin dotted;
+	}
+	.has-scrollbar > .nano-content::-webkit-scrollbar!important {
+	  display: none;
+	}
+	.nano > .nano-content::-webkit-scrollbar {
+	  display: block;
+	}
+	.nano > .nano-pane {
+	  display: block;
+	  background : rgba(0,0,0,.25);
+	  position   : absolute;
+	  width      : 10px;
+	  right      : 0;
+	  top        : 0;
+	  bottom     : 0;
+	  visibility : hidden\9; /* Target only IE7 and IE8 with this hack */
+	  opacity    : .01;
+	  transition            : .2s;
+	  border-radius         : 5px;
+	  z-index: 999;
+	}
+	.nano > .nano-pane > .nano-slider {
+	  background: #444;
+	  background: rgba(0,0,0,.5);
+	  position              : relative;
+	  margin                : 0 1px;
+	  border-radius         : 3px;
+	}
+	.nano:hover > .nano-pane, .nano-pane.active, .nano-pane.flashed {
+	  visibility : visible\9; /* Target only IE7 and IE8 with this hack */
+	  opacity    : 0.99;
+	}
+	/*nanoscroll video fix*/
+	#main::before {
+		position: absolute;
+		width: 100%;
+		height: 100%;
+		display: table;
+		z-index: 1;
+	}
+	.disablehover::before {
+		display: block !important;
+	}
 
-},{}]},{},[4,3,5,7,16,19]);
+/*Inputs*/
+.input-group .form-control, .form-control {
+	border-radius: 0;
+}
+.input-group .input-group-btn, .input-group .input-group-btn button {
+	border-radius: 0;
+	border: 0;
+}
+input[type="checkbox"] {
+	width: 15px;
+	height: 15px;
+	margin-bottom: 10px;
+	top: -1px;
+	background: transparent;
+	appearance: none;
+	-webkit-appearance: none;
+	-moz-appearance:none;
+}
+input[type="checkbox"]:checked:after {
+	content: "¦";
+	width: 9px;
+	height: 9px;
+	position: absolute;
+	margin-top: 2px;
+	margin-left: 2px;
+	color: transparent;
+	font-size: 0;
+}
+
+
+
+.alert {
+	border-radius: 10px;
+	margin-bottom: 9px;
+}
+.alert-warning {
+    border-color: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    color: #fff;
+    font-size: 10px;
+}
+.well {
+	padding: 15px;
+	border-radius: 0;
+	margin-bottom: 9px;
+	box-shadow: none;
+}
+
+
+/*Dropdowns and Context Menus*/
+	/*Bootstrap Dropdowns*/
+	.dropdown-menu, .user-dropdown {
+		border-radius: 0;
+	}
+	.dropdown-menu>li>a:focus, .dropdown-menu button:hover {
+		text-decoration: none;
+	}
+	.dropdown-menu button{
+		display: list-item;
+		padding: 3px 20px;
+		clear: both;
+		font-weight: 400;
+		font-size: 14px;
+		line-height: 1.42857143;
+		background: none;
+		border: 0;
+		border-radius: 0;
+		white-space: nowrap;
+	}
+
+
+
+
+
+
+/*Positioning*/
+#wrap{padding: 0;}
+#motdrow {
+	width: 100%;
+	margin: 0;
+	overflow: hidden;
+}
+#motdrow .col-lg-12{
+	width: 100%;
+	padding: 0;
+}
+#announcements,.container-fluid .col-md-12,#motd .text-center {
+	width: auto;
+}
+.row:after{
+		clear: none;
+}
+.container-fluid .col-lg-12, .row {
+	padding-right: 0;
+}
+div#videowrap {
+	margin-bottom: 9px !important;
+	background: black;
+height:100%;
+width:100%;
+}
+.video-js.vjs-playing .vjs-tech {
+  pointer-events: none;
+}
+#chatwrap {
+	padding: 0;
+	overflow: hidden;
+}
+#mainpage .container-fluid {
+	padding: 0;
+	margin: 0 !important;
+}
+#mainpage {
+    padding-top: 50px;
+}
+#footer {
+	float: left;
+	width: 100%;
+}
+@media (max-width: 991.9px){
+	#mainpage > .nano {
+		position: static;
+	}
+	#mainpage .container-fluid {
+		position: relative;
+		overflow-y: visible;
+		padding-left: 1px;
+		padding-right: 1px;
+	}
+	#mainpage > .nano > .nano-pane {
+		display: none;
+	}
+	.nano .nano-content {
+		position: relative;
+		overflow: visible;
+	}
+	#mainpage > .nano .nano-pane {display: none !important; opacity: 0; visibility: hidden;}
+}
+@media (min-width: 992px){
+	/*chat bar is 38 px high*/
+	#main {
+		position: relative;
+	}
+	#chatwrap .nano {
+		height: calc(100% - 72px) !important;
+	}
+	#chatwrap .nano #messagebuffer {
+		height: 100% !important;
+		margin-right: 0px;
+		padding-bottom: 20px;
+                padding-top: 10px;
+		/*width: 100% DO NOT UNCOMMENT FOR COMPATIBILITY WITH NANOSCROLLER*/
+	}
+	#userlist {
+		height: calc(100% - 72px) !important;
+
+	}
+	#chatwrap {
+		height: calc(100% - 50px) !important;
+	}
+	#chatwrap {
+		float: right;
+		display: block;
+		position: fixed;
+		bottom: 0;
+		right: 1px;
+		margin-bottom: 0;
+	}
+	#mainpage > .nano {
+		width: 55%;
+	}
+	#mainpage .container-fluid {
+		width: 100%;
+		padding: 0 0 0 0;
+	}
+	.col-md-7 {
+		width: 100%;;
+	}
+	#mainpage > .nano {
+		position: fixed;
+		overflow-y: visible; /*scroll pre-nano*/
+		overflow-x: hidden;
+		height: calc(100% - 50px);
+		padding: 0 10px 0 9px !important;
+	}
+	#mainpage > .nano {
+		position: fixed;
+
+	}
+	#footer .container {
+		width: 100%;
+	}
+	#videowrap {
+		padding: 0;
+		padding-left: 14px;
+		padding-right: 0px;
+	}
+	#leftpane, #leftpane-inner, #pollwrap {
+		width: 100%
+	}
+	#leftpane-inner {
+		margin: 0;
+	}
+	#pollwrap {
+		padding: 0;
+	}
+}
+
+/*Left Container*/
+#videowrap .embed-responsive {
+	background: hsl(0,0%,0%); /*fixes transparent videos*/
+}
+
+
+
+/*Chat*/
+	#messagebuffer {
+		padding: 0;
+	}
+	#messagebuffer > div {
+		padding-left: 5px;
+		padding-right: 5px;
+	}
+	.server-msg-reconnect, .server-msg-disconnect {
+		margin-left: 5px;
+		margin-right: 5px;
+	}
+	/*Userlist*/
+	#mainpage #userlist {
+		border-top: 0;
+	}
+	#userlist {
+		width: 100%;
+		overflow: visible;
+	}
+	#userlist {padding-left: 5px;}
+		/*profile boxes*/
+		#userlist .profile-box {
+			border: 0;
+			border-radius: 0;
+			padding: 8px;
+			padding-top: 0;
+		}
+		#userlist .profile-box .profile-image {
+			border: 0;
+			border-radius: 0;
+			margin-right: 8px;
+		}
+		#userlist .profile-box strong {
+			margin-right: 8px;
+			padding-top: 5px;
+			display: inline-block;
+		}
+			/*Specifially user dropdowns*/
+			.user-dropdown {
+				padding: 5px 0 3px 0;
+			}
+			.user-dropdown strong {
+				padding-left: 23px;
+				font-weight: 100;
+				font-size: 11pt;
+				margin-right: 20px;
+			}
+			.user-dropdown .btn-group-vertical {
+				padding-top: 5px;
+			}
+			.user-dropdown .btn-group-vertical .btn {
+				text-align: left;
+				border-radius: 0 !important;
+				border: 0;
+				padding: 3px 20px 3px 25px;
+				background: none;
+			}
+
+	/*Chat header (time and toggles)*/
+	#connected {
+		width: 100%;
+	}
+	.navbar-inverse {
+    background-image: none!important;
+	}
+	.navbar {
+    background: hsla(0, 0%, 0%, 0.24);
+	}
+	#chatheader {
+		width: 100%;
+		border-bottom: 0;
+		border-radius: 0;
+	}
+		#chatheader span {
+			border: 0;
+			border-radius: 0;
+			padding: 4px 7px 5px;
+		}
+		#clockstaff {
+			float: right;
+		}
+		#emotetoggle, #capturebutton, #jointoggle {
+			float: left !important;
+		}
+	/*Chat bar*/
+	#chatline, #guestlogin>input, #guestlogin>.input-group-addon {
+		border-radius: 0;
+	}
+
+/*Below Video*/
+#mainpage .btn:focus {outline: none;}
+.textheader {
+	font-size: 24px;
+}
+	p#currenttitle, p.sectionheader {
+		font-size: 1.5rem;
+		letter-spacing: -0.03em;
+		overflow-x: hidden;
+		text-align: left;
+		height: auto;
+		font-family: quicksand;
+	}
+		.section {
+		padding: 12px 15px 5px 15px;
+		border-radius: 0;
+		margin-bottom: 9px;
+		position: relative;
+	}
+	/*drinkbar*/
+	#drinkbarwrap {
+		display: block;
+		width: 100%;
+		height: auto;
+		margin-left: 0;
+		padding: 0 15 0 15;
+	}
+	/*Video Description*/
+	#currenttitle {
+		border: none;
+		border-radius: 0;
+		background: none;
+		position: absolute;
+                top: 16px;
+	}
+#chatheader, #videowrap-header {
+	border: 0px solid #ccc!important;
+}
+#usercount {
+    font-family: Quicksand;
+    font-size: 15px;
+	    display: block;
+    color: #a1b3bb;
+}
+	/*Header right (Time and progbar)*/
+	#headright {
+		width: 100%;
+		height: 2px;
+		float: right;
+		position: relative;
+		margin-top: -7px;
+	}
+	#progbar {
+		width: 0;
+		height: 2px;
+	}
+	#ss7time {
+	color: hsla(0, 0%, 100%, 0.65);
+	height: 24px;
+    position: relative;
+    float: right;
+    margin-top: 24px;
+    vertical-align: bottom;
+    font-size: 24px;
+    line-height: 0px;
+    font-family: quicksand;
+	}
+	/*headerbuttons*/
+	#headbottom {
+		height: 34px;
+		margin-top: 9px;
+		padding: 5px 0 0 0;
+	}
+	#headbottom .headbtn {
+    color: hsla(216, 19%, 84%, 0.74);
+    height: 27px;
+    background: none;
+    border: none;
+    border-radius: 0;
+    padding: 5px 0 5px 0;
+    box-shadow: none;
+    font-size: 15px;
+    vertical-align: initial;
+    FONT-family: quicksand;
+    text-transform: uppercase;
+    outline: none;
+    transition: color .3s;
+	}
+#headbottom:hover, .headbtn:hover {
+color: white!important;
+border: 0px;
+text-shadow: 0 0 5px #228DFF, 0 0 10px #228DFF, 0 0 15px #228DFF, 0 0 20px #fff, 0 0 35px #fff, 0 0 40px #228DFF, 0 0 50px #228DFF, 0 0 75px #228DFF;
+}
+	.headbtnleft {
+		margin-right: 20px;
+	}
+	.headbtn span {top:0;}
+	.headbtn:before {
+		font-family: arial, sans-serif;
+		font-weight: bold;
+	}
+	button#voteskip[title="Voteskip"] {
+   vertical-align: initial;
+    float: right;
+    right: 40px;
+    margin-right: 34px;
+	}
+	#voteskip:before {content: "Voteskip"; font-size: 14px;}
+	#voteskip span {top: 0;}
+	#voteskip span:before {
+		width: 17px !important;
+		height: 17px !important;
+		margin-left: 6px;
+		content: "n";
+		display: inline-block;
+		color: transparent;
+		font-size: 14px;
+		line-height: normal;
+		background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABEAAAARCAMAAAAMs7fIAAAALVBMVEUAAAD///8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAt4K88AAAADnRSTlMAABQVF1NUWKeoqa3p6yhFc3sAAABKSURBVHgBhco7EsAgDANRQf6E+P7HjTXjRmrY8s2iNbw7qsgo8V0uEdxUuJlwM+Fmws2FLeU2mQdUng6RHCAyOkTmCYiMDSZVyQ+RGQkPgHXunQAAAABJRU5ErkJggg==);
+	}
+	#addmedia:after {content: "Add media";}
+	#addmedia:before {
+		width: 17px !important;
+		height: 17px !important;
+		margin-right: 6px;
+		content: "n";
+		color: transparent;
+		display:none;
+		background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABEAAAARCAMAAAAMs7fIAAAABlBMVEUAAAAAAAClZ7nPAAAAAXRSTlMAQObYZgAAABlJREFUeAFjgAJGRkYoi64ijOiAGJGBdTMAOMcAXg+QicwAAAAASUVORK5CYII=);
+	}
+	#newpollbtn:before {
+		display:none;
+		width: 17px;
+		height: 17px;
+		margin-right: 6px;
+		content: "n";
+		color: transparent;
+		background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABEAAAARCAYAAAA7bUf6AAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAMZJREFUeNpiYCAPOAPxZiAWJlM/gxAQPwHi/1DalhxDVkMNgOEdpBqQjGbAWyCWJsUAFSD+jGZIICkGsADxCTQD5pDqjRY0A24DMQ8pBtgA8R8kA34BsSk2hcxAnAPEbGjifEB8H80V1dgMYATi+VAFq6EGwsBSNAMOo8nDwSw0hcugCqPQxN8DsTwuP2cD8T80DWugmpDFoggFXgGaBnS8lNhYKMNhwH1oABMNatEMAHnTl5wM1ohkQBEDBaADGk5EAYAAAwAM71Mk30wOEAAAAABJRU5ErkJggg==);
+	}
+	#morebtn:after {content: "More";}
+	#morebtn:before {
+		content: "n";
+		display:none;
+		color: transparent;
+		width: 18px;
+		height: 17px;
+		margin-right: 6px;
+		background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABIAAAARCAMAAADnhAzLAAAAElBMVEUAAAD///8AAAAAAAAAAAAAAAD+HpTfAAAABXRSTlMAAAFX7J/vCUYAAAAnSURBVHgBY2DEAAMgxMzCwszAgEKxsLKyMDEgU1A2ExKFRSP9XQ8AEJsBtxxU/nIAAAAASUVORK5CYII=);
+	}
+	#mediarefresh span {display: none;}
+
+	/*Queue*/
+	#queue {
+		border: none;
+	}
+	.queue_entry {
+		border: none;
+	}
+		/*plmeta*/
+		#upnext #plmeta, #plcount {
+			border: none;
+			border-radius: 0;
+			background: none;
+			height: auto;
+			font-size: 14px;
+			display: inline;
+		}
+		#queuecontainer > .textheader {
+			width: 100%;
+			padding-right: 17px;
+		}
+		#plmeta:before {content: " ("}
+		#plmeta:after {content: ")"}
+#pllength {
+    position: absolute;
+    left: 50%;
+    right: 50%;
+    font-size: 12px;
+}
+		#pldropdown{
+			width: auto;
+			height: 17px;
+			border: none;
+			padding: 0;
+			background: none;
+			/*background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABEAAAARCAYAAAA7bUf6AAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAALpJREFUeNpiYKAiUAXiLUDsRKR6kLrNUH1g0ATEP4H4PxB/QJbAAVSg6v5D9TUxAYlPQMwGVcAPxNuAWAiHASDx7VB1DFB9n2CSi6Amw/BeJIMZkDTsRVO3CFkBBxCfQFMwA82QGWjyJ6D6UIA0ED9BU1gIlStAEwepk8EVaOZA/B1J8R8g7oHSMLHvUHV4QSyareg4lth0043DgB5SEh8zNCqRDdgOFScJgNLCTagBN5HSxiigFwAIMAA/nEU9cHe3rAAAAABJRU5ErkJggg==);*/
+			background-position: 0 2px;
+			float: right;
+			margin: 6px 6px 0 6px;
+		}
+		#pldropdown::before {
+			content: "More";
+		}
+		#ploptions {
+			right: -2px;
+			left: initial;
+			top: 30px;
+		}
+		#qlockbtn {margin-top: 6px;}
+		#qlockbtn, #qlockbtn span {
+			background: none;
+			width: 17px;
+			height: 17px;
+			padding: 0;
+			color: transparent;
+			border: none;
+			float: right;
+		}
+		#qlockbtn span:before {
+			width: 13px;
+			height: 14px;
+			background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACUAAAAVCAYAAADB5CeuAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAVlJREFUeNpi/P//PwMIMDIyMpALYGZQDYAMxGGoCxCvB+KXQPwPiJ8D8WogtsVlBqWOg5uBxTBmIJ4LUoMHTwAFLj0d1YvmgPNAvAqIT6GJNxDpKFCIr4GG9G8gfgrEy4HYhlhHqQHxX6ilX4HYD02fExB/gMr/AmJpPI4iO8TRDSvDFhJoIBtJTQYeR03AEeLH0cTrCTkKOeoMcThKD0nNFByO0kAK8Z9AHI5mhiM0JmAhLoXPUUpAvBaIm5CDFQ3oIjlqGg5HVSCpacRhTgGSmnRkc1jQyqd7QBxMaq7BUsbJILG34tC2D82jcMDCQBvAhMT+jqsEQFeP7rk+aNz+JwOD9PVDzWlHSiukYpC+NgakdPMXzXekgr/QUP9NYej/AWJWRixBSS5gpJY5TAyDEIw6atRRtHLUPwrN+YNUNFBsDsxRPdBCkByAXHj2U2hOH8NgBQABBgC1sxw2g3lAvAAAAABJRU5ErkJggg==);
+			display: inline-block;
+			background-size: 27px;
+		}
+		#qlockbtn.btn-success span:before {background-position: 0 0}
+		#qlockbtn.btn-danger span:before {background-position: -13px 0;}
+
+
+	/*AddMedia*/
+	#rightpane {
+		float: none;
+		width: auto;
+		min-height: 0;
+		display: none;
+	}
+	#rightpane-inner {
+		transition: height 0.3s;
+	}
+	.plcontrol-collapse {
+		padding-left: 0;
+		float: none;
+	}
+	#searchcontrol ul {
+		width: 100%;
+		margin: 0;
+	}
+	#rightpane-inner .col-md-12 {
+		width: 100%;
+		padding: 0;
+		float: none;
+	}
+		/*mediabuttons*/
+		#mediabuttons .btn {
+			height: 28px;
+			background: none;
+			border: none;
+			border-radius: 0;
+			padding: 0;
+			box-shadow: none;
+			margin-right: 20px;
+		}
+		#mediabuttons .btn span {
+			font-family: arial, sans-serif;
+			font-size: 15px;
+			font-weight: bold;
+		}
+		#mediabuttons .btn:not(.collapsed) {
+			box-sizing: content-box;
+		}
+		#showmediaurl span:before {content: "Link"}
+		#showcustomembed span:before {content: "Embed"}
+		#showsearch span:before {content: "Search"}
+		#showplaylistmanager span:before {content: "Playlists"}
+	/*controls*/
+	.form-control {
+        border: 0px solid #ccc;
+        height: 40px;
+	}
+	#controlsrow {
+		margin: 0;
+		padding: 12px 15px;
+		border-radius: 0;
+		margin-bottom: 9px;
+	}
+	#controlsrow:after {clear: both;}
+	#leftcontrols, #rightcontrols {
+		width: auto;
+
+	}
+	/*Message of the day*/
+	#motdwrap {
+
+	}
+
+/* Divider Dragger */
+.mHandle {
+	position: absolute;
+	width: 15px;
+	height: 25px;
+	left: 55%; /*default 55%*/
+	background: white;
+	cursor: col-resize;
+	visibility: hidden;
+	opacity: 0;
+	transition: opacity ease .2s, visibility .05s;/*visibility hidden because opacity: 0 is not the same as display: block. */
+	/* Needs to be a delay because moving cursor from scroll would otherwise make mhandle disappear. Display cannot have transitions.*/
+}
+.scrollHover .mHandle, .mHover #mHandle-mid, .mHover .mHandle {
+	opacity: .99;
+	visibility: visible;
+}
+.scrolling .mHandle{
+	pointer-events: none;
+}
+#mHandle-left {
+	-webkit-transform: translate(-21px, 0px);
+	        transform: translate(-21px, 0px); /*default -21px, 0*/
+	border-radius: 3px 0 0 3px;
+}
+#mHandle-right {
+	-webkit-transform: translate(-1px, 0px);
+	        transform: translate(-1px, 0px); /*default -1px, 0*/
+	border-radius: 0 3px 3px 0;
+}
+#mHandle-mid {
+	width: 5px;
+	-webkit-transform: translate(-6px, 0px);
+	        transform: translate(-6px, 0px);
+	opacity: 0;
+	pointer-events: none;
+}
+/* Dragging */
+#dragoverlay {
+	position: absolute;
+	visibility: hidden;
+	width: 100%;
+	height: 100%;
+	background: none;
+	transition: background ease .5s, visibility 1s;
+	pointer-events: none;
+	z-index: 99999;
+}
+#dragoverlay.dragging {
+	visibility: visible;
+	pointer-events: auto;
+	background: hsla(0,0%,0%,0.3);
+}
+#handleWidget {
+	visibility: hidden;
+	position: absolute;
+	width: 35px;
+	height: 25px;
+	left: 55%; /*default 55%*/
+	border-radius: 3px;
+	background: white;
+	cursor: col-resize;
+}
+.dragging #handleWidget {
+	visibility: visible;
+}
+div#layout-config-form {
+    display: none;
+}
+div#common-config-form {
+    display: none;
+}
+//scroller
+
+img.kek {
+    opacity: 0.3;
+    border: 1px solid transparent;
+    -webkit-filter: grayscale(80%);
+}
+img.kek:hover {
+    opacity: 1;
+    	background: transparent linear-gradient(to bottom left, rgba(249,208,129,.25) 10%, rgba(227,2,62,.25) 30%, rgba(49,128,135,.25) 90%);
+	border-bottom: 0px solid transparent;
+        border-image: linear-gradient(to bottom left, rgba(249,208,129,1) 10%, rgba(227,2,62,1) 30%, rgba(49,128,135,1) 90%);
+	border-image-slice: 1;
+        -webkit-filter: grayscale(1%);
+}
+#responsive-sizing {
+  text-align: center;
+}
+
+#responsive-sizing .spec {
+  display: inline-block;
+  margin: 10px 10px 10px 0;
+}
+
+#responsive-sizing .breakpoint {
+  background-color: #333;
+  color: white;
+  border-radius: 5px 0 0 5px;
+}
+
+#responsive-sizing .vis-image-count {
+  border-radius: 0 5px 5px 0;
+  background-color: #ddd;
+}
+
+#responsive-sizing .breakpoint,
+#responsive-sizing .vis-image-count {
+  padding: 5px 10px;
+}
+
+/* Begin Scroller Rules */
+.horiz-scroll {
+  display: flex;
+  display: -webkit-flex;
+  flex-direction: column;
+  -webkit-flex-direction: column;
+  overflow: visible;
+  position: relative;
+}
+
+.horiz-scroll h2 {
+  font-weight: 600;
+}
+
+.horiz-scroll .scroller {
+  max-height: 30vw;
+  position: relative;
+  display: flex;
+  display: -webkit-flex;
+  flex: 1;
+  -webkit-flex: 1;
+
+}
+
+.horiz-scroll .scroller .left-scroll {
+  left: 0;
+}
+
+.horiz-scroll .scroller .right-scroll {
+  right: 0;
+}
+
+.horiz-scroll .scroller .left-scroll,
+.horiz-scroll .scroller .right-scroll {
+  display: flex;
+  display: -webkit-flex;
+  flex-direction: column;
+  -webkit-flex-direction: column;
+  padding: 0 2vw;
+  overflow-x: hidden;
+  z-index: 1;
+  justify-content: center;
+  -webkit-justify-content: center;
+  position: absolute;
+  height: 100%;
+}
+
+.horiz-scroll .scroller .left-scroll p,
+.horiz-scroll .scroller .right-scroll p {
+  font-size: 8em;
+  color: white;
+  text-shadow: 0 0 10px #333;
+  margin: 0;
+  overflow-y: hidden;
+}
+#addedbyTEXT {
+    display: block;
+    float: right;
+    padding-right: 0px;
+    padding-top: 5px;
+    font-family: Quicksand;
+    opacity: 0.5;
+}
+@media only screen and (max-width: 480px) {
+  .horiz-scroll .scroller .left-scroll p,
+  .horiz-scroll .scroller .right-scroll p {
+    color: black;
+  }
+}
+
+.horiz-scroll .scroller .scrollable-x {
+  white-space: nowrap;
+  overflow-x: scroll;
+  overflow-y: hidden;
+}
+
+.horiz-scroll .scroller .scrollable-x::-webkit-scrollbar {
+  display: none;
+}
+
+.horiz-scroll .scroller .scrollable-x::-webkit-scrollbar {
+  width: .375em;
+  max-width: 12px;
+}
+
+.horiz-scroll .scroller .scrollable-x::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+.horiz-scroll .scroller .scrollable-x::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.25);
+  border-radius: 1em;
+}
+
+.horiz-scroll .scroller .scroll-images {
+  position: relative;
+  flex: 8;
+  -webkit-flex: 8;
+  order: 2;
+  -webkit-order: 2;
+  z-index: 0;
+  font-size: 0;
+  overflow: hidden;
+  padding: 0% 0;
+  margin: 0% 0;
+  text-align: center;
+    margin-left: 5rem;
+    margin-right: 5rem;
+    border-radius: 1rem;
+}
+
+.horiz-scroll .scroller .scroll-images img {
+  width: 20%;
+  top: 0;
+  z-index: 0;
+  -webkit-transition: all 100ms;
+  transition: all 100ms;
+  position: relative;
+  opacity:0.5;
+  -webkit-filter: grayscale(90%);
+  filter: grayscale(90%);
+}
+.horiz-scroll .scroller .scroll-images img:hover {
+  -webkit-filter: grayscale(0%);
+  filter: grayscale(0%);
+  opacity:1;
+  transform: scale(1.10);
+}
+
+@media only screen and (max-width: 960px) {
+  .horiz-scroll .scroller .scroll-images img {
+    width: 33.333%;
+  }
+}
+
+@media only screen and (max-width: 720px) {
+  .horiz-scroll .scroller .scroll-images img {
+    width: 50%;
+  }
+}
+#loginform {
+    display:none;
+
+}
+@media only screen and (max-width: 480px) {
+  .horiz-scroll .scroller .scroll-images img {
+    width: 50%;
+    margin: 0 25%;
+  }
+}
+.server-msg-reconnect {
+    width: 100%;
+    font-size: 20px;
+}
+#scroll-feature {
+    padding-top: 10px;
+    display:block;
+    float: left;
+}
+
+#scroll-feature:hover {
+    opacity:1;
+}
+.horiz-scroll .scroller .scroll-images img.focused {
+  z-index: 2;
+  box-shadow: 0 5px 10px rgba(0, 0, 0, 0.25);
+  transition: all 250ms ease-in-out, drop-shadow 0.5s;
+}
+
+.invisible {
+  opacity: 0;
+  transition: .5s ease-in-out;
+}
+#config-wrapper {
+    display: none!important;
+}
+#videowrap, #playlistrow, .well {
+    display: block;
+}
+.OLB {
+    background: rgba(0, 0, 0, 0.5);
+    transition: all 0.3s ease-in-out;
+	border: 0;
+    font-size: 14px;
+    color: rgba(210, 210, 210, 0.84);
+    margin-right: 5px;
+    margin-left: 5px;
+    line-height: 22px;
+        display: inline-block;
+    padding: 6px 12px;
+    margin-bottom: 0;
+    font-size: 14px;
+    font-weight: 400;
+    line-height: 1.42857143;
+    text-align: center;
+    white-space: nowrap;
+    vertical-align: middle;
+    -ms-touch-action: manipulation;
+    touch-action: manipulation;
+    cursor: pointer;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    background-image: none;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+}
+.OLB:hover {
+  background-color: rgba(0, 0, 0, 0.55)!important;
+}
+.navbar {
+    margin-bottom: 0px;
+}
+.vjs-error .vjs-error-display:before {
+    content: 'X';
+    font-size: 0em;
+}
+
+@keyframes fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* Firefox < 16 */
+@-moz-keyframes fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* Safari, Chrome and Opera > 12.1 */
+@-webkit-keyframes fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* Internet Explorer */
+@-ms-keyframes fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* Opera < 12.1 */
+@-o-keyframes fadein {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+/*Scrollbars*/
+::-webkit-scrollbar {
+	width: 11px;
+	height: 10px;
+	border: 0px solid hsl(0,0%,27%);
+	border-top: 0;border-bottom: 0;
+}
+/*::-webkit-scrollbar-button {background-color:rgba(26,26,26,1);}*/
+::-webkit-scrollbar-track {
+	background-color: hsla(0, 0%, 27%, 0.01);
+}
+::-webkit-scrollbar-thumb {
+    background-color: hsla(290, 6%, 34%, 0.58);
+    border: 0px solid hsl(0,0%,40%);
+    border-radius: 10px;
+}
+::-webkit-scrollbar-corner {background-color:rgba(26,26,26,1);}
+
+.darktheme .nano > .nano-pane > .nano-slider {
+    background: hsla(0, 0%, 100%, 0.15);
+    width: 10px;
+    float: right;
+    transition: background ease 1.1s;
+}
+.mHandle {
+    height: 25px;
+    background: rgba(82, 82, 82, 0.74);
+}
+.horiz-scroll .scroller .left-scroll p, .horiz-scroll .scroller .right-scroll p {
+    font-size: 340%;
+    color: rgba(255, 255, 255, 0.71);
+}
+.darktheme .nano > .nano-pane > .nano-slider:hover, .darktheme .scrolling .nano-slider {
+	background: hsla(0,0%,100%,.56);
+}
+.darktheme .nano > .nano-pane {
+	background: none;
+	border-radius: 5px;
+}
+.navbar-nav>li>a {
+    border-right: 0px solid rgba(0,0,0,.2);
+    border-left: 0px solid rgba(255,255,255,.1);
+    font-size: 10px;
+    letter-spacing: 0.01em;
+    font-family: Quicksand;
+}
+.server-msg-reconnect {
+    border: 0px solid #3C3C3C;
+    line-height: 2;
+    margin-top: 5px;
+    margin-bottom: 5px;
+    color: #87A287;
+    text-align: center;
+    background-color: rgba(18, 100, 18, 0);
+}
+/* Inputs */
+	/* Text Inputs */
+	input.form-control[type="text"], input.form-control[type="password"], input.form-control[type="email"], textarea.form-control {
+    background-color: hsla(0, 0%, 0%, 0.57)!important;
+    border-top: 0px solid hsl(0, 0%, 29%);
+    color: hsl(0, 0%, 63%);
+	font-size: 12px;
+    -webkit-font-smoothing: antialiased
+     border-bottom: 1px solid rgba(177, 157, 157, 0.25);
+	}
+	input.form-control[type="text"]:focus, input.form-control[type="password"]:focus, input.form-control[type="email"]:focus, textarea.form-control:focus {
+		border: 1px solid hsl(0, 0%, 8%);
+    border-bottom: 2px solid #3F7A96;
+	}
+
+	/* Buttons */
+	.input-group .input-group-btn, .input-group .input-group-btn button {
+		background: hsl(0, 0%, 24%);
+		border: 0;
+		box-shadow: none;
+		color: hsl(0, 0%, 63%);
+		-webkit-font-smoothing: antialiased
+	}
+	.input-group .input-group-btn > button {
+		border: 1px solid hsl(0,0%,31%);
+	}
+	.input-group .input-group-btn button:hover {
+		background: hsl(0, 0%, 14%);
+	}
+	.input-group > span:first-of-type.input-group-btn > button {
+		border-left: 0;
+	}
+	.input-group > span:last-of-type.input-group-btn > button {
+		border-left: 0;
+	}
+	.btn-default[disabled], .btn.disabled, .btn[disabled], fieldset[disabled] .btn {opacity: 0.63}
+
+	/* Checkboxes */
+	input[type="checkbox"] {
+		border: 1px solid hsl(0, 0%, 31%);
+	}
+	input[type="checkbox"]:checked {background: hsl(0,0%,5%)}
+	input[type="checkbox"]:checked:after {
+		background: hsl(0,0%,31%);
+	}
+	.checkbox {
+		color: hsl(0, 0%, 56%);
+	}
+
+
+
+/* Dropdowns and Context Menus */
+	/* Bootstrap Dropdowns */
+	.dropdown-menu, .user-dropdown {
+		background: hsl(0,0%,12%);
+		border: 1px solid hsl(0,0%,18%);
+		box-shadow: 0 0 20px 0 hsl(0,0%,0%);
+	}
+	.dropdown-menu>li>a:focus, .dropdown-menu button:hover {
+		color: hsl(0,0%,100%);
+		background: hsl(199,68%,50%);
+	}
+	.dropdown-menu button{
+		color: hsl(0,0%,100%);
+	}
+.open>.dropdown-menu {
+    display: block;
+    font-size: 1rem;
+}
+p#currenttitle {
+    width: auto;
+    float: left;
+    padding: 15px;
+    font-family: quicksand;
+    font-size: 1.4rem;
+}
+form#logoutform {
+    font-size: 1rem;
+    display: none;
+}
+
+.navbar-nav {
+    float: right;
+    margin: 0;
+    font-size: 1rem;
+}
+
+.navbar {
+	background: hsl(0,0%,13%);
+	color: hsl(0,0%,53%);
+	border: none;
+	max-height: 50px;
+    //overflow: hidden;
+}
+@media (max-width: 880px){
+	.navbar{
+	overflow: hidden;
+	}
+}
+.navbar-inverse .navbar-nav>.active>a, .navbar-inverse .navbar-nav>.active>a:focus, .navbar-inverse .navbar-nav>.active>a:hover, .navbar-inverse .navbar-nav>li>a:focus, .navbar-inverse .navbar-nav>li>a:hover, .navbar-inverse .navbar-link:hover {
+	color: hsl(0,0%,100%);
+}
+.navbar-inverse .navbar-nav>.open>a, .navbar-inverse .navbar-nav>.open>a:hover, .navbar-inverse .navbar-nav>.open>a:focus {
+	background: hsl(199,68%,50%);
+}
+.navbar-inverse .navbar-brand:focus, .navbar-inverse .navbar-brand:hover {
+	color: hsl(0,0%,100%);
+}
+
+.navbar-inverse .navbar-brand {
+color: #99a4a9;
+}
+.navbar-brand {
+    margin-left: 35px!important;
+    float: left;
+    padding: 15px;
+    font-size: 19px;
+}
+
+body {
+	background: hsl(0,0%,6%);
+}
+
+
+@media (min-width: 992px){
+	/*chat bar is 38 px high*/
+	#messagebuffer{
+		    margin-right: 0px!important;
+	}
+}
+.pagination>li>a, .pagination>li>span {
+    background-image: none!important;
+}
+.pagination>li>a, .pagination>li>span {
+    background-color: rgba(21, 21, 21, 0.26);
+    border: 1px solid rgba(0, 0, 0, 0.46);
+}
+.emotelist-table {
+    margin: auto;
+    border-radius: 10px;
+    width: 100%;
+    padding: 5px;
+}
+/* Left Container */
+#videowrap .embed-responsive {
+	background: hsl(0,0%,0%); /*fixes transparent videos*/
+}
+
+.queue_entry {
+    border-color: #000;
+    background-color: rgba(37, 38, 39, 0.4);
+}
+.queue_entry {
+    line-height: 35px;
+    padding: 5px;
+    font-size: calc(100% + ((0.4vw - .41rem) * 1.189));
+}
+.timestamp {
+     font-size: 6pt;
+    float: left;
+    display: block;
+    opacity: 0;
+    left: 0;
+    margin-top: 0px;
+    width: 52px;
+    position: absolute;
+    color: rgba(197, 196, 175, 0.8);
+    background: rgba(0, 0, 0, 0.84);
+    padding: 1px 4px;
+    text-decoration: none;
+    border-radius: 5px;
+    transition: all 3s ease;
+    -webkit-transition: all 3s ease;
+    text-overflow: clip;
+    white-space: nowrap;
+    z-index: 1000;
+    overflow: hidden;
+}
+.fadeout{
+  opacity: 1 !important;
+}
+
+#pllength {
+    opacity:0;
+    transition: opacity 0.7s, visibility 0.7s;
+
+}
+/* Chat */
+	div#messagebuffer, div#userlist {
+border: 0px solid hsl(0, 0%, 18%);
+background: #060606d1;
+	}
+	.nick-hover {
+		background: hsla(0, 0%, 6%, 0.03);
+	}
+
+	/* Userlist*/
+		/* profile boxes */
+		#userlist .profile-box {
+			background: hsl(0,0%,12%);
+			box-shadow: 0 0 20px 0 hsl(0,0%,0%);
+		}
+		#userlist .profile-box .profile-image {
+			box-shadow: 0 0 5px 0 hsl(0,0%,0%);
+		}
+			/* Specifially user dropdowns */
+			.user-dropdown .btn-group-vertical {
+				border-top: 1px solid hsl(0,0%,18%);
+			}
+	.user-dropdown .btn-group-vertical .btn:hover {
+		background: hsl(199, 68%, 50%);
+	}
+	/* Chat header (time and toggles) */
+#chatheader {
+    background-color: hsla(0, 0%, 12%, 0.14);
+    border-bottom: 2px solid hsla(0, 0%, 0%, 0.39);
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.33);
+    max-height: 31px;
+	}
+		#chatheader span {
+			background: hsl(0,0%,31%);
+		}
+		#chatheader > .label, #chatheader > .label-default, #chatheader > .label-success, #chatheader i, #chatheader .custom-label {
+    float: left;
+    display: block;
+    padding: 12.8px 0;
+    padding: .8rem 0;
+    width: 33%;
+    outline: 0;
+    cursor: pointer;
+    text-align: center;
+    font-size: 24px;
+    font-size: 1.4rem;
+    position: relative;
+		}
+		#chatheader span.label-success {
+			border-bottom: 2px solid hsl(358, 79%, 45%);
+			background: hsl(0,0%,31%);
+		}
+		#clockstaff {
+			border-bottom: 1px solid hsl(0,0%,100%);
+		}
+		#chatheader i:hover {
+   
+		}
+	/* Chat bar */
+	#chatline, #guestlogin>input, #guestlogin>.input-group-addon {
+	}
+
+/* Below Video */
+#mainpage .btn:focus {outline: none;}
+
+	p#currenttitle, p.sectionheader {
+	color: hsla(0, 0%, 100%, 0.74);
+	}
+	p#currenttitle {
+	max-width: 500px;
+    overflow: hidden;
+    overflow-wrap: break-word;	
+    max-height: 35px;
+	}
+	.section, .well, #controlsrow {
+    padding: 4rem;
+    margin-left: 5rem;
+    margin-right: 5rem;
+    margin-top: 3rem;
+    border-radius: 1rem;
+    background: #131315c9;
+	}
+	/* Video Description* /
+	/* Header right (Time and progbar) */
+	#headright {
+		    background: -webkit-gradient(left bottom, right top, color-stop(0%, rgba(59,173,227,1)), color-stop(25%, rgba(87,111,230,1)), color-stop(51%, rgba(152,68,183,1)), color-stop(100%, rgba(255,53,127,1)));
+    background: -webkit-linear-gradient(45deg, rgba(59,173,227,1) 0%, rgba(87,111,230,1) 25%, rgba(152,68,183,1) 51%, rgba(255,53,127,1) 100%);
+    background: linear-gradient(45deg, rgba(59,173,227,1) 0%, rgba(87,111,230,1) 25%, rgba(152,68,183,1) 51%, rgba(255,53,127,1) 100%);
+    filter: progid:DXImageTransform.Microsoft.gradient( startColorstr='#3bade3 ', endColorstr='#ff357f ', GradientType=1 );
+	}
+	#progbar {
+		background: hsla(167, 100%, 50%, 0.68);
+	}
+	/* headerbuttons */
+	#headbottom {
+		border-top: 1px solid hsl(0, 0%, 20%);
+	}
+	.headbtnleft {
+		margin-right: 20px;
+	}
+	.headbtn:before {
+		filter: invert(63%) !important;
+		-webkit-filter: invert(63%) !important;
+		color: hsl(0,0%,63%);
+	}
+	button#voteskip[title="Voteskip"] {
+	}
+	#voteskip:before {content: "Voteskip"; font-size: 14px;}
+	#voteskip span {top: 0;}
+	.headbtn span, #voteskip span {top: 0;}
+	#voteskip span:before {
+		filter: invert(63%) !important;
+		-webkit-filter: invert(63%) !important;
+	}
+
+	/* Queue */
+		/* plmeta */
+		#upnext #plmeta, #plcount {
+			color: hsl(0,0%,78%);
+		}
+		#qlockbtn span:before/*, #pldropdown*/ {
+			-webkit-filter: invert(63%);
+			        filter: invert(63%);
+		}
+		#pldropdown {
+			color: hsl(0,0%,63%);
+			font-weight: bold;
+		}
+
+
+	/* AddMedia */
+		/* mediabuttons */
+		#mediabuttons {
+			border-bottom: 1px solid hsl(0,0%,20%);
+		}
+		#mediabuttons .btn {
+			color: hsl(0,0%,50%);
+		}
+		#mediabuttons .btn span {
+			color: hsl(0,0%,50%);
+		}
+		#mediabuttons .btn:not(.collapsed) span {
+			color: hsl(0,0%,69%);
+		}
+		#mediabuttons .btn:not(.collapsed) {
+			border-bottom: 2px solid hsl(358, 79%, 45%);
+		}
+.queue_active {
+    background-image: -webkit-linear-gradient(rgba(255, 255, 255, 0.12),rgba(255, 255, 255, 0.12));
+    background-image: linear-gradient(rgba(255, 255, 255, 0.12),rgba(255, 255, 255, 0.12));
+    background-repeat: no-repeat;
+    box-shadow: 0 3px 6px 1px rgba(0, 0, 0, 0.79);
+}
+	/* Footer */
+	#footer {
+    background: hsla(0, 0%, 0%, 0.9) !important;
+    font-size: 11px;
+}
+.vjs-error-display div {
+background-color: rgb(0, 0, 0);
+font-size: 2.4em;
+}
+img.chat-avatar.chat-avatar_small {
+    border-radius: 100%;
+    height: 35px;
+    width: 35px;
+    padding: 1px;
+    margin-right: 5px;
+    margin-left: 10px;
+    position: absolute;
+    transform: scale(1);
+    left: 0;
+    -webkit-transition: .4s;
+    transition: .4s;
+    box-shadow: 2px 0 0 0 rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.1), 0 0 0 2px rgba(0, 0, 0, 0.1);
+    -webkit-transition: all 1s cubic-bezier(1, -0.565, 0.075, 1.495);
+    transition: all 1s cubic-bezier(1, -0.565, 0.075, 1.495);
+}
+img.chat-avatar.chat-avatar_small:hover {
+     cursor: pointer;
+     transform: scale(1.9);
+  -webkit-animation: anti-wiggle 0s ease-in-out;
+          animation: anti-wiggle 0s ease-in-out; 
+}
+img.chat-avatar.chat-avatar_small:hover:after {
+     cursor: pointer;
+  -webkit-animation: wiggle 0s ease-in-out;
+          animation: wiggle 0s ease-in-out; 
+}
+@-webkit-keyframes wiggle {
+  20% {
+    box-shadow: inset -5px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(7deg);
+            transform: rotate(7deg);
+  }
+  40% {
+    box-shadow: inset -11px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(-14deg);
+            transform: rotate(-14deg);
+  }
+  60% {
+    box-shadow: inset -5px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(4deg);
+            transform: rotate(4deg);
+  }
+  80% {
+    box-shadow: inset -8px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(-2deg);
+            transform: rotate(-2deg);
+  }
+  100% {
+    box-shadow: inset -7px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(0deg);
+            transform: rotate(0deg);
+  }
+}
+
+@keyframes wiggle {
+  20% {
+    box-shadow: inset -5px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(7deg);
+            transform: rotate(7deg);
+  }
+  40% {
+    box-shadow: inset -11px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(-14deg);
+            transform: rotate(-14deg);
+  }
+  60% {
+    box-shadow: inset -5px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(4deg);
+            transform: rotate(4deg);
+  }
+  80% {
+    box-shadow: inset -8px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(-2deg);
+            transform: rotate(-2deg);
+  }
+  100% {
+    box-shadow: inset -7px 0 5px 0 rgba(0, 0, 0, 0.4);
+    -webkit-transform: rotate(0deg);
+            transform: rotate(0deg);
+  }
+}
+@-webkit-keyframes anti-wiggle {
+  20% {
+    -webkit-transform: translateX(4px) rotate(-7deg);
+            transform: translateX(4px) rotate(-7deg);
+  }
+  40% {
+    -webkit-transform: translateX(-8px) rotate(14deg);
+            transform: translateX(-8px) rotate(14deg);
+  }
+  60% {
+    -webkit-transform: translateX(2px) rotate(-4deg);
+            transform: translateX(2px) rotate(-4deg);
+  }
+  80% {
+    -webkit-transform: translateX(-1px) rotate(2deg);
+            transform: translateX(-1px) rotate(2deg);
+  }
+  100% {
+    -webkit-transform: translateX(0px) rotate(0deg);
+            transform: translateX(0px) rotate(0deg);
+  }
+}
+@keyframes anti-wiggle {
+  20% {
+    -webkit-transform: translateX(4px) rotate(-7deg);
+            transform: translateX(4px) rotate(-7deg);
+  }
+  40% {
+    -webkit-transform: translateX(-8px) rotate(14deg);
+            transform: translateX(-8px) rotate(14deg);
+  }
+  60% {
+    -webkit-transform: translateX(2px) rotate(-4deg);
+            transform: translateX(2px) rotate(-4deg);
+  }
+  80% {
+    -webkit-transform: translateX(-1px) rotate(2deg);
+            transform: translateX(-1px) rotate(2deg);
+  }
+  100% {
+    -webkit-transform: translateX(0px) rotate(0deg);
+            transform: translateX(0px) rotate(0deg);
+  }
+}
+.channel-emote {
+    max-width: 100px;
+    max-height: 90px;
+    display: inline-block;
+    border-radius: 8px;
+    transform: scale(0.7);
+    box-shadow: 0 20px 25px -20px #131313d1;
+}
+.channel-emote:hover {
+    transform: scale(1.2);
+      cursor: pointer;
+  -webkit-transform-style: preserve-3d;
+  -webkit-transition: all 1s cubic-bezier(1, -0.565, 0.075, 1.495);
+  transition: all 1s cubic-bezier(1, -0.565, 0.075, 1.495);
+}
+strong.username {
+    word-wrap: break-word;
+    display: block;
+    font-size: 1.3rem;
+    line-height: 1.2;
+    font-weight: 700;
+    color: #6d98abe3;
+    cursor: cell;
+    padding-top: 0px;
+    letter-spacing: 1.5px;
+}
+	.ch {
+	float: left;
+    padding: 8.5px 0px;
+    width: 33%;
+    border: 0;
+    outline: 0;
+    min-height: 31px;
+    cursor: pointer;
+    text-align: center;
+    position: relative;   
+    border-bottom: 1px solid rgba(117, 161, 206, 0.5);
+    cursor: pointer;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+        -webkit-transition: all 0.3s ease-in-out;
+    -moz-transition: all 0.3s ease-in-out;
+    -o-transition: all 0.3s ease-in-out;
+    transition: all 0.3s ease-in-out;
+	}
+	.ch:hover {
+	color: rgba(236, 236, 243, 0.97);
+    border-bottom: solid 1px rgba(9, 255, 243, 0.62)!important;
+    -webkit-transition: all 0.3s ease-in-out;
+    -moz-transition: all 0.3s ease-in-out;
+    -o-transition: all 0.3s ease-in-out;
+    transition: all 0.3s ease-in-out;
+	}
+	#wrap {
+	-webkit-animation: fadein 4s; /* Safari, Chrome and Opera > 12.1 */
+    -moz-animation: fadein 4s; /* Firefox < 16 */
+    -ms-animation: fadein 4s; /* Internet Explorer */
+    -o-animation: fadein 4s; /* Opera < 12.1 */
+    animation: fadein 4s;
+    background-color: rgb(0, 0, 0);
+    background-blend-mode: overlay;
+    background-size: cover;
+    background-position: center;
+	}
+	.navbar {
+    background: hsla(0, 0%, 13%, 0.54);
+	}
+	.btn-default.active, .btn-default.focus, .btn-default:active, .btn-default:focus, .btn-default:hover, .open>.dropdown-toggle.btn-default {
+    color: #fff;
+    background-color: rgba(19, 18, 18, 0.81);
+    border-color: rgba(30, 32, 35, 0);
+    border-bottom: 0px solid black;
+	text-shadow: 0 0 5px #228DFF, 0 0 10px #228DFF, 0 0 15px #228DFF, 0 0 20px #fff, 0 0 35px #fff, 0 0 40px #228DFF, 0 0 50px #228DFF, 0 0 75px #228DFF;
+}
+#userlist {
+    display: none;
+}
+a.qe_title {
+    text-overflow: ellipsis;
+    max-width: 45ch;
+    white-space: nowrap;
+    display: inline-block;
+    overflow: hidden;
+}
+[class*="chat-msg"] .username .chatAvatar{
+    width:auto;
+    max-height:initial;
+}
+#userlist {
+    text-align: center;
+    font-size: 14px;
+    line-height: 33px;
+}
+[class*="chat-msg"]:not(.drink):not(.consecutive):before,
+.poll-notify + [class*="chat-msg"].consecutive:before,
+.poll-notify:before {
+    content:"";
+    display:block;
+    border-top: 0px solid rgba(187, 187, 187, 0.49);
+    opacity:0.3;
+    margin: auto;
+    margin-top:1px;
+    margin-bottom:1px;
+    position:absolute;
+
+}
+[class*="chat-msg"]:not(.drink):not(.consecutive) {
+    margin-top: 1px;
+    margin-left: 48px;
+    margin-right: 20px;
+    margin-bottom: 2px;
+}
+img.chat-avatar.chat-avatar_big {
+    height: 55px;
+    padding: 3px;
+    border-radius: 100%;
+    position: absolute;
+    left: 0;
+}
+#controlsrow {
+    display: none;
+}
+img.chat-picture {
+    max-height: 155px;
+    max-width: 100px;
+    border-radius: 5px;
+}
+.video-js .vjs-control-bar {
+    background: linear-gradient(rgba(29, 28, 28, 0), rgba(14, 14, 14, 0.22))!important;
+    font-size: 13px;
+}
+button#mediarefresh {
+    float: right;
+}
+
+button.vjs-fullscreen-control.vjs-control.vjs-button {
+    display: none;
+}
+.pm-buffer.linewrap {
+display: block;
+    float: right;
+    position: relative;
+    padding-left: 50px;
+    width: 100%;
+}
+.panel {
+    margin-bottom: 20px;
+    background-color: rgba(16, 16, 16, 0.92);
+    border: 0px solid transparent;
+    transition: 0.5s all;
+-webkit-transition: 0.5s all;
+-moz-transition: 0.5s all;
+-o-transition: 0.5s all;
+}
+.panel-default>.panel-heading {
+    color: #DCE4E8;
+    font-size: 16px;
+    background-color: #2B2B2F;
+    border-color: rgba(0,0,0,.6);
+    border-top-left-radius: 0.7em!important;
+    -webkit-border-top-left-radius: 0.7em!important;
+    -o-border-top-left-radius: 0.7em!important;
+    -moz-border-top-left-radius: 0.7em!important;
+    border-top-right-radius: 0.7em!important;
+    -webkit-border-top-right-radius: 0.7em!important;
+    -o-border-top-right-radius: 0.7em!important;
+    -moz-border-top-left-radius: 0.7em!important;
+    transition: 0.5s all;
+-webkit-transition: 0.5s all;
+-moz-transition: 0.5s all;
+-o-transition: 0.5s all;
+}
+ul#queue {
+    list-style: decimal;
+    padding-left: 8px;
+    position: inherit;
+    padding-right: 8px;
+    position: inherit;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    color: rgba(146, 148, 154, 0.79);}
+.queue_sortable li {
+  counter-increment: index; 
+  display: flex;
+  align-items: center;
+}
+.queue_sortable li::before {
+  content: counters(index, ".", decimal-leading-zero);
+  font-size: 1.5rem;
+  text-align: right;
+  min-width: 50px;
+  padding-right: 12px;
+  font-variant-numeric: tabular-nums;
+  align-self: flex-start;
+  background-image: linear-gradient(to bottom, aquamarine, orangered);
+  background-attachment: fixed;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.panel-primary>.panel-heading {
+    color: #BFBFBF;
+    background-color: rgba(122, 130, 136, 0);
+    border-color: rgba(0,0,0,.6);
+}
+.panel-heading:hover {
+    transform: scale(1.01);
+    -webkit-transform: scale(1.01);
+    -moz-transform: scale(1.01);
+    -o-transform: scale(1.01);
+    -ms-transform: scale(1.01);
+    z-index: 1;
+    border: none;
+}
+.btn-group, .btn-group-vertical {
+    vertical-align: middle;
+    float: right;
+    right: 40px;
+}
+.qe_time {
+	font-size: 13px;
+padding-left: 20px;
+    float: right;
+    margin-right: 1%;
+    font-family: inherit;
+}
+.queue_sortable li:hover {border-bottom: #2b2b2b 2px solid;}
+
+.alert-info {
+    background-color: rgba(0, 0, 0, 0.48);
+    border-color: #3dced8;
+    color: #fff;
+    padding: 20px;
+    margin-left: 50px;
+    margin-right: 50px;
+}
+
+input:focus + .line-left,
+input:focus + .line-right {
+  transition: width .5s ease;
+}
+input::-webkit-input-placeholder {
+  color: #fff;
+  /*fallback*/
+  color: rgba(0, 0, 0, .4);
+  font-style: italic;
+  transition: color .5s ease;
+}
+
+input:focus::-webkit-input-placeholder {
+  color: transparent;
+}
+table {
+    background-color: rgba(0, 0, 0, 0.24);
+}
+.nav-tabs>li.active>a, .nav-tabs>li.active>a:focus, .nav-tabs>li.active>a:hover {
+    color: #fff;
+    background-color: rgba(0, 0, 0, 0.14);
+    border: 1px solid #1c1e22;
+    border-bottom-color: transparent;
+    cursor: default;
+}
+.nav>li>a:focus, .nav>li>a:hover {
+    text-decoration: none;
+    background-color: rgba(0, 0, 0, 0.29);
+}
+.pagination>li.disabled>a, .pagination>li.disabled>a:hover, .pagination>li.disabled>span, .pagination>li.disabled>span:hover {
+    background-color: transparent;
+    background-image: -webkit-linear-gradient(#484e55,#3a3f44 60%,#313539);
+    background-image: -o-linear-gradient(#484e55,#3a3f44 60%,#313539);
+    background-image: -webkit-gradient(linear,left top,left bottom,from(#484e55),color-stop(60%,#3a3f44),to(#313539));
+    background-image: linear-gradient(rgba(0, 0, 0, 0.12),rgba(0, 0, 0, 0.16) 60%,rgba(0, 0, 0, 0.15));
+    background-repeat: no-repeat;
+    -webkit-filter: none;
+    filter: none;
+}
+#mediabuttons:hover {
+    color: hsl(0, 0%, 89%);
+}
+#AudioNoticeSqueeToggle {
+    font-size: 16px;
+    padding: 7px;
+    float: right;
+    right: 10px;
+    bottom: 45px;
+    position: absolute;
+    color: rgb(255, 255, 255);
+    border-radius: 50%;
+    -ms-transform: scale(0.7, 0.7);
+    -webkit-transform: scale(0.7, 0.7);
+    transform: scale(0.7, 0.7);
+    opacity: 0.4;
+}
+#AudioNoticeSqueeToggle:hover {
+    opacity: 0.9;
+        -ms-transform: scale(1, 1);
+    -webkit-transform: scale(1, 1);
+    transform: scale(1, 1);
+}
+.label-info {
+    background-color: rgba(74, 72, 78, 0.63);
+}
+.modal-content {
+    background: rgba(27, 28, 31, 0.97);
+}
+.nav-tabs {
+    border-bottom: 1px solid #4b4e52;
+}
+.video-js .vjs-slider {
+background-color: rgba(133, 115, 159, 0.25);
+}
+.video-js .vjs-load-progress div {
+    display:none!important;
+}
+.vjs-polyzor-skin .vjs-control:before, .vjs-polyzor-skin .vjs-control:active {
+    text-shadow: 0 0 1em #000000 !important;
+}
+.vjs-polyzor-skin .vjs-control::before, .vjs-polyzor-skin .vjs-control:active {
+    text-shadow: 0 0 1em rgba(0, 0, 0, 0) !important;
+}
+.headbtn span {
+    top: 4px;
+    font-size: 15px;
+    padding: 2px;
+}
+.qe_blame {
+    float: right;
+    font-size: 11px;
+    margin-right: 6px;
+}
+.pm-panel, .pm-panel-placeholder {
+    min-width: 440px;
+    border-top-left-radius: 0.7em!important;
+    -webkit-border-top-left-radius: 0.7em!important;
+    -o-border-top-left-radius: 0.7em!important;
+    -moz-border-top-left-radius: 0.7em!important;
+    border-top-right-radius: 0.7em!important;
+    -webkit-border-top-right-radius: 0.7em!important;
+    -o-border-top-right-radius: 0.7em!important;
+    -moz-border-top-left-radius: 0.7em!important;
+}
+#customSettingsStaging {
+    padding: 30px;
+}
+#quickQuality {
+    display: none;
+}
+.label.label-info.col-sm-2 {
+    padding: 9px;
+    font-size: 12px;
+}
+.btn:hover {
+    text-shadow: 0 0 5px #228DFF, 0 0 10px #228DFF, 0 0 15px #228DFF, 0 0 20px #fff, 0 0 35px #fff, 0 0 40px #228DFF, 0 0 50px #228DFF, 0 0 75px #228DFF;
+    border-color: rgb(16, 16, 16);
+    background: #2323234a;
+    transition: left 0.9s 0s, background .2s;
+}
+
+#VideoOverlay {
+  -moz-transition: opacity 1000ms ease;
+  transition: opacity 1000ms ease;
+    top: 0;
+    display: block;
+    position: absolute;
+    width: 100%;
+    height: 50px;
+    padding: 10px;
+    z-index:1000000;
+}
+
+.drink {
+    margin: 10px 10px;
+    padding: 12px 0px;
+    background: rgba(177, 187, 184, 0.08);
+    border: 0px solid;
+    border-radius: 13px;
+    left: 20px;
+    right: 20px;
+    margin-left: 50px;
+}
+.chat-msg-\$server\$ {
+    font-style: italic;
+    color: hsla(305, 13%, 34%, 0.84);
+    font-size: 8pt;
+    position: relative;
+    border-radius: 1000px;
+    background: rgba(255, 255, 255, 0.07);
+    height: 10px;
+    line-height: 12px;
+    width: 0;
+    margin: 0px auto;
+    padding: 5px 10px;
+    overflow: hidden;
+    transition: bottom 0.5s cubic-bezier(0.42, 0.0, 0.58, 1.0);
+}
+.nick-highlight {
+    background-color: rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    padding: 3px;
+    transition: bottom 0.5s cubic-bezier(0.42, 0.0, 0.58, 1.0);
+}
+#prompt-install-drive-userscript {
+    padding: 100px;
+    margin-top: 10%;
+    margin-left: 100px;
+    width: 80%;
+    position: absolute;
+    font-size: 16px;
+    background: rgba(39, 38, 38, 0.18);
+}
+.server-whisper {
+    text-align: center;
+    display: inline-block;
+    width: 100%;
+}
+.vjs-volume-menu-button {
+    bottom: 20px;
+}
+#drinkcount {
+    background-color: rgba(82, 82, 82, 0.16);
+    font-size: 21px;
+    padding: 15px;
+    font-family: 'Montserrat', sans-serif;
+}
+#drinkbarwrap {
+    width: 130px;
+    height: auto;
+    margin-left: 0px;
+    margin-right: 0px;
+    float: left;
+    left: 0;
+    right: 0;
+    top: 45px;
+    position: absolute;
+    opacity: 0.5;
+}
+.spoiler {
+    color: #a2a2a2;
+    background: rgba(0, 0, 0, 0.08);
+    filter: blur(5px);
+    -webkit-filter: blur(5px);
+    -moz-filter: blur(5px);
+    -o-filter: blur(5px);
+    -ms-filter: blur(5px);
+    filter: progid:DXImageTransform.Microsoft.Blur(PixelRadius='5');
+}
+.spoiler:hover {
+    color: #a2a2a2;
+    background: rgba(0, 0, 0, 0.05);
+    filter: blur(0px);
+    -webkit-filter: blur(0px);
+    -moz-filter: blur(0px);
+    -o-filter: blur(0px);
+    -ms-filter: blur(0px);
+    filter: progid:DXImageTransform.Microsoft.Blur(PixelRadius='0');
+}
+.dropdown-menu {
+min-width: 50px;
+}
+.btn-default.disabled, .btn-default.disabled.active, .btn-default.disabled.focus, .btn-default.disabled:active, .btn-default.disabled:focus, .btn-default.disabled:hover, .btn-default[disabled], .btn-default[disabled].active, .btn-default[disabled].focus, .btn-default[disabled]:active, .btn-default[disabled]:focus, .btn-default[disabled]:hover, fieldset[disabled] .btn-default, fieldset[disabled] .btn-default.active, fieldset[disabled] .btn-default.focus, fieldset[disabled] .btn-default:active, fieldset[disabled] .btn-default:focus, fieldset[disabled] .btn-default:hover {
+    background-color: rgba(42, 45, 47, 0.18);
+}
+.btn-default[disabled], .btn.disabled, .btn[disabled], fieldset[disabled] .btn {
+    opacity: 0.53;
+}
+#leftcontrols {
+    display: none;
+}
+#playlistmanagerwrap {
+    display: none;
+}
+#bg-wrapper {
+
+}
+.well {
+    border: 0px solid #0c0d0e;
+}
+.navbar-inverse .navbar-collapse, .navbar-inverse .navbar-form{
+    background: #131315c9;
+}
+.bg-wrapper, #backg {
+    opacity:0.70;
+    overflow: hidden;
+    background-size: cover!important;
+    background-position: center center!important;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    margin-top: 0;
+    margin-left: 0;
+  -webkit-filter: blur(8px);
+  filter: url('#blur'); /*Firefox Support for Blur*/
+  filter: blur(8px);
+
+}
+
+.container {
+    width: 100%;
+}
+@media (min-width: 992px)
+.container {
+    width: 100%;
+}
+@media (min-width: 768px)
+.container {
+    width: 100%;
+}
+.vjs-loading-spinner {
+    display: none!important;
+    opacity:0;
+}
+.fullvideo {
+    width: 100%!important;
+}
+#showchat {
+    display: none;
+}
+.showchat {
+   display: inline!important;
+}
+.navbar-inverse .navbar-nav>.active>a, .navbar-inverse .navbar-nav>.active>a:focus, .navbar-inverse .navbar-nav>.active>a:hover, .navbar-inverse .navbar-nav>li>a:focus, .navbar-inverse .navbar-nav>li>a:hover {
+    background-color: rgba(93, 99, 104, 0.2)!important;
+    background-image: linear-gradient(rgba(2, 2, 2, 0.12),rgba(16, 17, 18, 0.12) 40%,rgba(25, 27, 29, 0.42))!important;
+}
+
+	/* Tired of yo shit right now */
+#newmessages-indicator-bghack {
+    background: rgba(0, 0, 0, 0.86);
+    z-index: 1000;
+    display: none;
+    position: absolute;
+    left: 0px;
+    right: 0px;
+    border-top: 1px solid #4d5b90;
+    color: #9fa4a7;
+    font-size: 11px;
+}
+.wrapper-content {
+  display: table-cell;
+  width: 50%;
+  vertical-align: top;
+}
+.filter, .transformation {
+  display: table;
+  width: 100%;
+  text-align: center;
+}
+.wrapper.filter {
+    width: 20%;
+    left: 16px;
+    top: 70px;
+    right: 0;
+    display: block;
+    font-size: 10px;
+    position: absolute;
+}
+
+
+input[type="range"] {
+    -webkit-appearance: none !important;
+    width: 100%;
+    height: 15px;
+    background-color: #0a0a0a;
+    border: 0px solid #97c68b;
+    border-radius: 10px;
+    margin: auto;
+    transition: all 0.3s ease;
+}
+input[type="range"]:hover {
+  background-color: #b2d5aa;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none !important;
+  width: 20px;
+  height: 20px;
+  background-color: #579E81;
+  border-radius: 30px;
+  box-shadow: 0px 0px 3px #3c6d59;
+  transition: all 0.5s ease;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  background-color: #457d66;
+}
+input[type="range"]::-webkit-slider-thumb:active {
+  box-shadow: 0px 0px 1px #3c6d59;
+}
+.navbar-nav>li:first-child { 
+    display:none
+}
+#userlist {
+ overflow: scroll;
+}
+.spooky {
+    display: none;
+    height: 100%;
+    position: absolute;
+    float: left;
+    left:20px;
+}
+.vision {
+    display: none;
+    height: 100%;
+    position: absolute;
+    float: right;
+    right: 35px;
+}
+.halloweens {
+    font-size: 18px;
+    font-family: 'Montserrat';
+    font-weight: 400;
+    display: inline-block;
+    padding: 0 20px;
+    height: 40px;
+    line-height: 40px;
+    background: #c75b1a;
+    color: #fff;
+    border-radius: 3px;
+    width: 100%;
+    text-align: center;
+}
+#resize-video-larger, #resize-video-smaller { Display:none;}
+
+.discordoverlay{
+  width: 100%;
+  height: 130px;
+  position: relative;
+  padding-left: 15px;
+  overflow: hidden;
+}
+
+.discord {
+  display: inline-block;
+  height: 60px;
+  vertical-align: middle;
+  margin-right: 2.5px;
+}
+
+.discordmain {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: sans-serif;
+}
+.discordmain h1, .discordmain h2 {
+  font-family: 'Montserrat';
+}
+.discordmain h1 {
+    color: #e91e5e;
+    font-weight: 400;
+    line-height: 12px;
+    margin-top: 2px;
+    font-size: 23px;
+}
+.discordmain h2 {
+    color: #e91e5e;
+    font-size: 22px;
+    line-height: 0px;
+    font-weight: 700;
+}
+
+.discordtext {
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.Darrows {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 40px);
+  transform: translateY(-50%);
+  width: 50px;
+  height: 50px;
+}
+.Darrows:before, .Darrows:after {
+  content: '';
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 50%;
+  border-left-width: 16.66667px;
+  border-bottom-width: 16.66667px;
+  border-left-style: solid;
+  border-bottom-style: solid;
+  opacity: 0;
+}
+
+.Darrows-1:before {
+  animation: arrows-red 4s linear infinite 4s;
+}
+@keyframes arrows-red {
+  0% {
+    border-left-width: 16.66667px;
+    border-bottom-width: 16.66667px;
+    transform: translate(150px, -50%) rotate(45deg);
+    opacity: 0;
+  }
+  10%, 46% {
+    border-left-width: 16.66667px;
+    border-bottom-width: 16.66667px;
+    opacity: 0;
+  }
+  40% {
+    border-left-color: #E91E63;
+    border-bottom-color: #E91E63;
+    transform: translate(0px, -50%) rotate(45deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(50px, -50%) rotate(45deg);
+    opacity: 0;
+  }
+}
+.arrows-1:after {
+  animation: arrows-blue 4s linear infinite 2s;
+}
+@keyframes arrows-blue {
+  0% {
+    border-left-width: 16.66667px;
+    border-bottom-width: 16.66667px;
+    transform: translate(150px, -50%) rotate(45deg);
+    opacity: 0;
+  }
+  10%, 46% {
+    border-left-width: 16.66667px;
+    border-bottom-width: 16.66667px;
+    opacity: 0;
+  }
+  40% {
+    border-left-color: #03A9F4;
+    border-bottom-color: #03A9F4;
+    transform: translate(0px, -50%) rotate(45deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(50px, -50%) rotate(45deg);
+    opacity: 0;
+  }
+}
+.arrows-2:before {
+  animation: arrows-green 4s linear infinite 1s;
+}
+@keyframes arrows-green {
+  0% {
+    border-left-width: 16.66667px;
+    border-bottom-width: 16.66667px;
+    transform: translate(150px, -50%) rotate(45deg);
+    opacity: 0;
+  }
+  10%, 46% {
+    border-left-width: 16.66667px;
+    border-bottom-width: 16.66667px;
+    opacity: 0;
+  }
+  40% {
+    border-left-color: #00C853;
+    border-bottom-color: #00C853;
+    transform: translate(0px, -50%) rotate(45deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(50px, -50%) rotate(45deg);
+    opacity: 0;
+  }
+}
+.arrows-2:after {
+  animation: arrows-yellow 4s linear infinite -1s;
+}
+@keyframes arrows-yellow {
+  0% {
+    border-left-width: 16.66667px;
+    border-bottom-width: 16.66667px;
+    transform: translate(150px, -50%) rotate(45deg);
+    opacity: 0;
+  }
+  10%, 46% {
+    border-left-width: 16.66667px;
+    border-bottom-width: 16.66667px;
+    opacity: 0;
+  }
+  40% {
+    border-left-color: #FDD835;
+    border-bottom-color: #FDD835;
+    transform: translate(0px, -50%) rotate(45deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(50px, -50%) rotate(45deg);
+    opacity: 0;
+  }
+}
+.indicator {
+  position: absolute;
+  top: 50%;
+  left: 25px;
+  transform: translate(-50%, -50%) scale(2);
+}
+.indicator svg polyline {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.indicator svg polyline#back {
+  stroke: rgba(59,211,171,0.3);
+}
+.indicator svg polyline#front {
+  stroke: #3bd3ab;
+  stroke-dasharray: 12, 36;
+  stroke-dashoffset: 48;
+  animation: dash 1s linear infinite;
+}
+.cta {
+  position: fixed;
+  bottom: 20px;
+  right: 30px;
+  color: #222;
+  font-weight: bold;
+}
+@-moz-keyframes dash {
+  62.5% {
+    opacity: 0;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@-webkit-keyframes dash {
+  62.5% {
+    opacity: 0;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@-o-keyframes dash {
+  62.5% {
+    opacity: 0;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes dash {
+  62.5% {
+    opacity: 0;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.navbar-fixed-bottom .navbar-collapse, .navbar-fixed-top .navbar-collapse {
+    max-height: 50px!important;
+	width: 100%;
+}
+.vjs-menu-button.vjs-menu-button-popup.vjs-control.vjs-button.vjs-resolution-button {
+    left: 110px;
+    margin-right: 30px;
+    float: right;
+    bottom: 5px;
+}
+@keyframes flickering {
+  0% {
+    border-color: transparent;
+    opacity: 0.2;
+  }
+  
+  2% {
+    border-color: #1FFFFF;
+    opacity: 1;
+  }
+  
+  4% {
+    border-color: transparent;
+    opacity: 0.2;
+  }
+  
+  8% {
+    border-color: #1FFFFF;
+    opacity: 1;
+  }
+  
+  28% {
+    border-color: #1FFFFF;
+    opacity: 1;
+  }
+  
+  30% {
+    border-color: transparent;
+    opacity: 0.2;
+  }
+  
+  36% {
+    border-color: #1FFFFF;
+    opacity: 1;
+  }
+  
+  100% {
+    border-color: #1FFFFF;
+    opacity: 1;
+  }
+}
+.poll-notify {
+    color: #f00;
+    font-weight: 100;
+    animation: flickering 5s infinite;
+}
+.close {
+    float: right;
+    margin-left: 10px;
+    font-size: 26px;
+    font-weight: 100;
+    line-height: 1;
+    color: #fff;
+    text-shadow: 0 2px 0 #3a3a3a;
+    opacity: .2;
+    filter: alpha(opacity=20);
+}
+.close:focus, .close:hover {
+    color: #fff;
+    text-decoration: none;
+    cursor: pointer;
+    opacity: 1;
+    filter: alpha(opacity=50);
+}
+.timestamp:hover {opacity:1;}
+.fa.pull-right {
+    margin-left: 0em!important;
+}
+.well>input.form-control[type="text"], input.form-control[type="password"], input.form-control[type="email"], textarea.form-control {
+    border-bottom: #ffffff40 solid 1px;
+    border-radius: 6px;
+}
+@media (max-width: 767px) {
+  #currenttitle {
+    display: none;}
+  #motdwrap, .well, #controlsrow { padding: 0rem;}
+	.channel-emote {
+    max-width: 60px;
+		max-height: 60px;}
+	.bg-wrapper, #backg {
+    background-position: center center!important;
+		position: fixed;}
+	.section, .well, #controlsrow {
+    padding: 2rem;
+    margin-left: 1rem;
+    margin-right: 1rem;
+    margin-top: 1rem;
+	}
+  }
+.vjs-subtitles-button.vjs-menu-button.vjs-menu-button-popup.vjs-control.vjs-button {
+    right: 66px;
+    text-align: right;
+    position: absolute;
+    bottom: 26px;
+}
+.leftchat {
+float:left!important;
+left:0!important;
+width: 23%!important;
+}
+.leftchatvideo {
+float: right!important;
+right: 0!important;
+}
+.darkerbg {opacity: 0.10!important;
+    -webkit-transition: all 100ms;
+    transition: all 100ms;}
+.overlayfix {
+    position: inherit!important;
+    background: #2121212b;
+}
+.RatioFill {object-fit: fill;}
+.RatioCover {object-fit: cover;}
+.Buffer {content: 'buffering...';}
+
+.videolist > .queue_entry > .btn-group { position: initial;}
+#queue > .queue_entry > .btn-group {position:absolute;}
