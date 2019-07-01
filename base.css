@@ -1221,19 +1221,7 @@ form#logoutform {
 .navbar-inverse .navbar-nav>.open>a, .navbar-inverse .navbar-nav>.open>a:hover, .navbar-inverse .navbar-nav>.open>a:focus {
 	background: hsl(199,68%,50%);
 }
-.navbar-inverse .navbar-brand:focus, .navbar-inverse .navbar-brand:hover {
-	color: hsl(0,0%,100%);
-}
 
-.navbar-inverse .navbar-brand {
-color: #99a4a9;
-}
-.navbar-brand {
-    margin-left: 35px!important;
-    float: left;
-    padding: 15px;
-    font-size: 19px;
-}
 
 body {
 	background: hsl(0,0%,6%);
