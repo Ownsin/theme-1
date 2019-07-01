@@ -209,6 +209,7 @@ input[type="checkbox"]:checked:after {
 }
 div#videowrap {
 	margin-bottom: 9px !important;
+	float: none !important;
 	background: black;
 height:100%;
 width:100%;
@@ -306,8 +307,8 @@ width:100%;
 	}
 	#videowrap {
 		padding: 0;
-		padding-left: 14px;
-		padding-right: 0px;
+		padding-left: 15px;
+		padding-right: 15px;
 	}
 	#leftpane, #leftpane-inner, #pollwrap {
 		width: 100%
