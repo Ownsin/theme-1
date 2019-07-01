@@ -34,9 +34,9 @@ body {
     border-radius: 12px;
 }
 .btn-default {
-    color: #e6e2e5;
-    background-color: rgba(18, 18, 20, 0.87);
-    border-color: rgba(132, 142, 152, 0);
+    color: #B5B5B5;
+    background-color: rgba(45, 45, 45, 0.63);
+    border-color: rgba(132, 142, 152, 0.1);
     background-image: none!important;
 }
 #videocontrols {
