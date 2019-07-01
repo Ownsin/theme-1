@@ -270,14 +270,14 @@ width:100%;
 
 	}
 	#chatwrap {
-		height: calc(100% - 50px) !important;
+		height: calc(100% - 49px) !important;
 	}
 	#chatwrap {
+		width: 44.94%;
 		float: right;
 		display: block;
 		position: fixed;
 		bottom: 0;
-		right: 1px;
 		margin-bottom: 0;
 	}
 	#mainpage > .nano {
